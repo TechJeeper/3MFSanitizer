@@ -196,6 +196,11 @@ describe("decodePaintState", () => {
         assert.equal(sanitizer.decodePaintState("0C"), 3);
         assert.equal(sanitizer.decodePaintState("2C"), 5);
         assert.equal(sanitizer.decodePaintState(""), 0);
+        assert.equal(sanitizer.encodePaintState(1), "4");
+        assert.equal(sanitizer.encodePaintState(2), "8");
+        assert.equal(sanitizer.encodePaintState(3), "0C");
+        assert.equal(sanitizer.encodePaintState(5), "2C");
+        assert.equal(sanitizer.decodePaintState(sanitizer.encodePaintState(4)), 4);
         assert.equal(sanitizer.stateToMaterialIndex(1, 2, 5), 0);
         assert.equal(sanitizer.stateToMaterialIndex(0, 2, 5), 1);
         assert.equal(sanitizer.stateToMaterialIndex(5, 1, 5), 4);
@@ -310,7 +315,7 @@ describe("sanitize3mf", () => {
         assert.match(xml, /pid="/);
     });
 
-    test("explodes multi-part assemblies into one object per filament", async () => {
+    test("keeps multi-part assemblies as one merged object with per-part filaments", async () => {
         const zip = new JSZip();
         zip.file(
             "3D/3dmodel.model",
@@ -377,14 +382,31 @@ describe("sanitize3mf", () => {
         const out = await loadOutput(result);
         const xml = await out.file("3D/3dmodel.model").async("string");
         const items = xml.match(/<item\b/g) || [];
-        assert.equal(items.length, 2);
-        assert.match(xml, /pindex="2"/);
-        assert.match(xml, /pindex="0"/);
+        assert.equal(items.length, 1);
+        assert.match(xml, /p1="2"/);
+        assert.match(xml, /p1="0"/);
+        assert.match(xml, /paint_color="0C"/);
+        assert.match(xml, /paint_color="4"/);
         const modelCfg = await out.file("Metadata/model_settings.config").async("string");
         assert.match(modelCfg, /value="Background"/);
         assert.match(modelCfg, /value="QR"/);
-        assert.match(modelCfg, /value="3"/);
-        assert.match(modelCfg, /value="1"/);
+        assert.match(modelCfg, /<part id="1"/);
+        assert.match(modelCfg, /<part id="2"/);
+        const slic3rModel = await out.file("Metadata/Slic3r_PE_model.config").async("string");
+        assert.match(slic3rModel, /<volume firstid="0" lastid="0">/);
+        assert.match(slic3rModel, /<volume firstid="1" lastid="1">/);
+    });
+
+    test("extractPreviewMeshes returns colored parts for source and sanitized", async () => {
+        const bytes = await makeBambuZip();
+        const source = await sanitizer.extractPreviewMeshes(JSZip, bytes);
+        assert.ok(source.meshes.length >= 1);
+        assert.ok(source.meshes[0].positions.length >= 9);
+        assert.equal(source.meshes[0].positions.length, source.meshes[0].colors.length);
+        const result = await sanitizeBytes(bytes);
+        const sanitized = await sanitizer.extractPreviewMeshes(JSZip, result.bytes);
+        assert.equal(sanitized.meshes.length, source.meshes.length);
+        assert.equal(sanitized.triangleCount, source.triangleCount);
     });
 });
 
@@ -443,15 +465,22 @@ describe("real Bambu Studio 3MF", () => {
         const out = await JSZip.loadAsync(result.bytes);
         const xml = await out.file("3D/3dmodel.model").async("string");
         const items = xml.match(/<item\b/g) || [];
-        assert.equal(items.length, 5);
-        assert.match(xml, /pindex="0"/);
-        assert.match(xml, /pindex="1"/);
-        assert.match(xml, /pindex="2"/);
-        assert.match(xml, /pindex="3"/);
+        assert.equal(items.length, 1);
+        assert.match(xml, /p1="0"/);
+        assert.match(xml, /p1="1"/);
+        assert.match(xml, /p1="2"/);
+        assert.match(xml, /p1="3"/);
+        assert.match(xml, /paint_color="4"/);
+        assert.match(xml, /paint_color="8"/);
+        assert.match(xml, /paint_color="0C"/);
+        assert.match(xml, /paint_color="1C"/);
         const modelCfg = await out.file("Metadata/model_settings.config").async("string");
         assert.match(modelCfg, /Background Circle/);
         assert.match(modelCfg, /K2DesignLab_QRCode/);
-        assert.match(modelCfg, /value="4"/);
+        assert.match(modelCfg, /<part id="5"/);
+        const slic3rModel = await out.file("Metadata/Slic3r_PE_model.config").async("string");
+        assert.match(slic3rModel, /<volume firstid=/);
+        assert.match(slic3rModel, /key="extruder" value="4"/);
         const project = JSON.parse(await out.file("Metadata/project_settings.config").async("string"));
         assert.deepEqual(project.filament_colour, ["#FBFCFF", "#F2910B", "#FFFF0A", "#000000"]);
         assert.deepEqual(project.extruder_colour, project.filament_colour);

@@ -6,29 +6,31 @@
     <title>Universal 3MF Sanitizer & Converter</title>
     <script src="https://cdn.tailwindcss.com"></script>
     <script src="https://cdnjs.cloudflare.com/ajax/libs/jszip/3.10.1/jszip.min.js"></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/0.160.1/three.min.js"></script>
     <script src="sanitizer.js"></script>
+    <script src="preview.js"></script>
     <style>
+        :root { color-scheme: dark; }
         body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif; }
         .drop-zone { transition: all 0.3s ease; }
-        .drop-zone.dragover { border-color: #3b82f6; background-color: #eff6ff; transform: scale(1.02); }
-        /* Custom scrollbar for logs */
+        .drop-zone.dragover { border-color: #60a5fa; background-color: #1e3a5f; transform: scale(1.02); }
         ::-webkit-scrollbar { width: 8px; }
-        ::-webkit-scrollbar-track { background: #1e293b; border-radius: 4px; }
+        ::-webkit-scrollbar-track { background: #0f172a; border-radius: 4px; }
         ::-webkit-scrollbar-thumb { background: #475569; border-radius: 4px; }
         ::-webkit-scrollbar-thumb:hover { background: #64748b; }
     </style>
 </head>
-<body class="bg-slate-100 min-h-screen text-slate-800 p-4 sm:p-8 flex flex-col items-center justify-center">
+<body class="bg-slate-950 min-h-screen text-slate-100 p-4 sm:p-8 flex flex-col items-center justify-center">
 
-    <div class="max-w-3xl w-full bg-white rounded-2xl shadow-xl overflow-hidden">
-        <div class="bg-blue-600 p-6 sm:p-8 text-white text-center">
+    <div class="max-w-5xl w-full bg-slate-900 rounded-2xl shadow-xl overflow-hidden border border-slate-800">
+        <div class="bg-blue-700 p-6 sm:p-8 text-white text-center">
             <h1 class="text-3xl sm:text-4xl font-extrabold mb-2 tracking-tight">Universal 3MF Sanitizer</h1>
             <p class="text-blue-100 text-sm sm:text-base font-medium">Convert proprietary 3MFs (Bambu/Prusa) to clean 3MFs for any slicer</p>
         </div>
 
         <div class="p-6 sm:p-8">
-            <div class="mb-6 bg-amber-50 border border-amber-200 rounded-xl p-4 sm:p-5 text-sm text-amber-800 flex items-start shadow-sm">
-                <svg xmlns="http://www.w3.org/2000/svg" class="h-6 w-6 mr-3 flex-shrink-0 text-amber-500" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+            <div class="mb-6 bg-amber-950/70 border border-amber-800 rounded-xl p-4 sm:p-5 text-sm text-amber-100 flex items-start shadow-sm">
+                <svg xmlns="http://www.w3.org/2000/svg" class="h-6 w-6 mr-3 flex-shrink-0 text-amber-400" fill="none" viewBox="0 0 24 24" stroke="currentColor">
                     <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M13 16h-1v-4h-1m1-4h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z" />
                 </svg>
                 <p>
@@ -36,32 +38,53 @@
                 </p>
             </div>
 
-            <div id="dropZone" class="drop-zone border-4 border-dashed border-slate-300 rounded-2xl p-10 sm:p-14 flex flex-col items-center justify-center cursor-pointer hover:bg-slate-50 mb-6 group">
-                <div class="bg-blue-100 p-4 rounded-full mb-4 group-hover:bg-blue-200 transition-colors">
-                    <svg xmlns="http://www.w3.org/2000/svg" class="h-12 w-12 text-blue-600" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+            <div id="dropZone" class="drop-zone border-4 border-dashed border-slate-600 rounded-2xl p-10 sm:p-14 flex flex-col items-center justify-center cursor-pointer hover:bg-slate-800/70 mb-6 group">
+                <div class="bg-blue-950 p-4 rounded-full mb-4 group-hover:bg-blue-900 transition-colors">
+                    <svg xmlns="http://www.w3.org/2000/svg" class="h-12 w-12 text-blue-400" fill="none" viewBox="0 0 24 24" stroke="currentColor">
                         <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M7 16a4 4 0 01-.88-7.903A5 5 0 1115.9 6L16 6a5 5 0 011 9.9M15 13l-3-3m0 0l-3 3m3-3v12" />
                     </svg>
                 </div>
-                <p class="text-xl font-bold text-slate-700 text-center">Drag & Drop your .3mf file here</p>
-                <p class="text-slate-500 mt-2 font-medium">or click to browse your files</p>
+                <p class="text-xl font-bold text-slate-100 text-center">Drag & Drop your .3mf file here</p>
+                <p class="text-slate-400 mt-2 font-medium">or click to browse your files</p>
                 <input type="file" id="fileInput" class="hidden" accept=".3mf,.3MF" />
             </div>
 
+            <div id="previewArea" class="hidden mb-6">
+                <h3 class="text-sm font-bold text-slate-400 uppercase tracking-wider mb-3">Preview</h3>
+                <div class="grid grid-cols-1 sm:grid-cols-2 gap-4">
+                    <div class="rounded-xl border border-slate-700 overflow-hidden bg-slate-950">
+                        <div class="px-3 py-2 text-xs font-bold uppercase tracking-wider text-slate-200 bg-slate-800 flex items-center justify-between gap-2">
+                            <span>Source</span>
+                            <span id="sourcePreviewMeta" class="normal-case font-medium text-slate-400"></span>
+                        </div>
+                        <canvas id="sourceCanvas" class="block w-full h-64"></canvas>
+                    </div>
+                    <div class="rounded-xl border border-slate-700 overflow-hidden bg-slate-950">
+                        <div class="px-3 py-2 text-xs font-bold uppercase tracking-wider text-slate-200 bg-slate-800 flex items-center justify-between gap-2">
+                            <span>Sanitized</span>
+                            <span id="sanitizedPreviewMeta" class="normal-case font-medium text-slate-400"></span>
+                        </div>
+                        <canvas id="sanitizedCanvas" class="block w-full h-64"></canvas>
+                    </div>
+                </div>
+                <p class="text-xs text-slate-400 mt-2">Live mesh from triangle data, not the 3MF plate screenshot. Drag to rotate — both views stay in sync.</p>
+            </div>
+
             <div id="logContainer" class="hidden mb-6">
-                <h3 class="text-sm font-bold text-slate-500 uppercase tracking-wider mb-2">Processing Log</h3>
-                <div id="logArea" class="bg-slate-900 text-emerald-400 font-mono text-xs sm:text-sm p-4 rounded-xl h-48 overflow-y-auto shadow-inner">
+                <h3 class="text-sm font-bold text-slate-400 uppercase tracking-wider mb-2">Processing Log</h3>
+                <div id="logArea" class="bg-slate-950 text-emerald-400 font-mono text-xs sm:text-sm p-4 rounded-xl h-48 overflow-y-auto shadow-inner border border-slate-800">
                     <!-- Logs will appear here -->
                 </div>
             </div>
 
-            <div id="actionArea" class="hidden flex flex-col sm:flex-row justify-between items-center bg-slate-50 p-4 rounded-xl border border-slate-200 mt-6">
+            <div id="actionArea" class="hidden flex flex-col sm:flex-row justify-between items-center bg-slate-800 p-4 rounded-xl border border-slate-700 mt-6">
                 <div class="flex items-center mb-4 sm:mb-0 w-full sm:w-auto truncate">
-                    <svg xmlns="http://www.w3.org/2000/svg" class="h-6 w-6 text-green-500 mr-2 flex-shrink-0" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                    <svg xmlns="http://www.w3.org/2000/svg" class="h-6 w-6 text-green-400 mr-2 flex-shrink-0" fill="none" viewBox="0 0 24 24" stroke="currentColor">
                         <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 12l2 2 4-4m6 2a9 9 0 11-18 0 9 9 0 0118 0z" />
                     </svg>
-                    <span class="text-sm text-slate-700 font-bold truncate" id="fileNameDisplay"></span>
+                    <span class="text-sm text-slate-100 font-bold truncate" id="fileNameDisplay"></span>
                 </div>
-                <button id="downloadBtn" class="w-full sm:w-auto bg-green-600 hover:bg-green-500 text-white font-bold py-3 px-6 rounded-lg shadow-md transition-all flex items-center justify-center focus:ring-4 focus:ring-green-300">
+                <button id="downloadBtn" class="w-full sm:w-auto bg-green-600 hover:bg-green-500 text-white font-bold py-3 px-6 rounded-lg shadow-md transition-all flex items-center justify-center focus:ring-4 focus:ring-green-800">
                     <svg xmlns="http://www.w3.org/2000/svg" class="h-5 w-5 mr-2" fill="none" viewBox="0 0 24 24" stroke="currentColor">
                         <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 16v1a3 3 0 003 3h10a3 3 0 003-3v-1m-4-4l-4 4m0 0l-4-4m4 4V4" />
                     </svg>
@@ -72,11 +95,11 @@
     </div>
 
     <!-- Message Modal -->
-    <div id="messageModal" class="fixed inset-0 bg-slate-900 bg-opacity-50 backdrop-blur-sm flex items-center justify-center hidden z-50 p-4">
-        <div class="bg-white p-6 sm:p-8 rounded-2xl shadow-2xl max-w-sm w-full transform transition-all">
-            <h3 id="modalTitle" class="text-2xl font-bold mb-3 text-slate-800">Message</h3>
-            <p id="modalBody" class="text-slate-600 mb-8 leading-relaxed">Something happened.</p>
-            <button onclick="closeModal()" class="w-full bg-blue-600 hover:bg-blue-700 text-white font-bold py-3 px-4 rounded-xl transition-colors focus:ring-4 focus:ring-blue-300">Got it</button>
+    <div id="messageModal" class="fixed inset-0 bg-slate-950/80 backdrop-blur-sm flex items-center justify-center hidden z-50 p-4">
+        <div class="bg-slate-800 p-6 sm:p-8 rounded-2xl shadow-2xl max-w-sm w-full transform transition-all border border-slate-700">
+            <h3 id="modalTitle" class="text-2xl font-bold mb-3 text-slate-50">Message</h3>
+            <p id="modalBody" class="text-slate-300 mb-8 leading-relaxed">Something happened.</p>
+            <button onclick="closeModal()" class="w-full bg-blue-600 hover:bg-blue-500 text-white font-bold py-3 px-4 rounded-xl transition-colors focus:ring-4 focus:ring-blue-900">Got it</button>
         </div>
     </div>
 
@@ -86,6 +109,11 @@
         const logContainer = document.getElementById('logContainer');
         const logArea = document.getElementById('logArea');
         const actionArea = document.getElementById('actionArea');
+        const previewArea = document.getElementById('previewArea');
+        const sourceCanvas = document.getElementById('sourceCanvas');
+        const sanitizedCanvas = document.getElementById('sanitizedCanvas');
+        const sourcePreviewMeta = document.getElementById('sourcePreviewMeta');
+        const sanitizedPreviewMeta = document.getElementById('sanitizedPreviewMeta');
         const fileNameDisplay = document.getElementById('fileNameDisplay');
         const downloadBtn = document.getElementById('downloadBtn');
         const messageModal = document.getElementById('messageModal');
@@ -156,6 +184,17 @@
             messageModal.classList.add('hidden');
         }
 
+        function fillPreviewMeta(el, preview) {
+            if (!el) return;
+            const parts = (preview && preview.partCount) || 0;
+            const tris = (preview && preview.triangleCount) || 0;
+            const swatches = ((preview && preview.palette) || []).map((hex) => {
+                const color = String(hex || '#808080');
+                return `<span class="inline-block w-2.5 h-2.5 rounded-sm border border-slate-500 align-middle" style="background:${color}"></span>`;
+            }).join('');
+            el.innerHTML = `live mesh · ${tris} tri · ${parts} part${parts === 1 ? '' : 's'} <span class="inline-flex gap-1 ml-1">${swatches}</span>`;
+        }
+
         async function handleFile(file) {
             // Case insensitive check for .3mf extension
             if (!file.name.match(/\.3mf$/i)) {
@@ -166,13 +205,16 @@
             logArea.innerHTML = '';
             logContainer.classList.remove('hidden');
             actionArea.classList.add('hidden');
+            previewArea.classList.add('hidden');
+            if (window.ThreeMFPreview) ThreeMFPreview.dispose();
             cleanedZipBlob = null;
 
             log(`Loaded file: <strong>${file.name}</strong> (${(file.size / 1024 / 1024).toFixed(2)} MB)`);
             log('Initializing 3MF parser...');
 
             try {
-                const result = await ThreeMFSanitizer.sanitize3mf(JSZip, await file.arrayBuffer(), { log });
+                const sourceBytes = await file.arrayBuffer();
+                const result = await ThreeMFSanitizer.sanitize3mf(JSZip, sourceBytes, { log });
                 cleanedZipBlob = new Blob([result.bytes], { type: "application/vnd.ms-3mfdocument" });
 
                 log(`<span class="text-green-400 font-bold">Success!</span> New file ready: ${(cleanedZipBlob.size / 1024 / 1024).toFixed(2)} MB`);
@@ -180,6 +222,21 @@
                 finalFileName = file.name.replace(/\.3mf$/i, '_cleaned.3mf');
                 fileNameDisplay.textContent = finalFileName;
                 actionArea.classList.remove('hidden');
+
+                log('Building Source / Sanitized preview...');
+                try {
+                    const sourcePreview = await ThreeMFSanitizer.extractPreviewMeshes(JSZip, sourceBytes);
+                    const sanitizedPreview = await ThreeMFSanitizer.extractPreviewMeshes(JSZip, result.bytes);
+                    previewArea.classList.remove('hidden');
+                    fillPreviewMeta(sourcePreviewMeta, sourcePreview);
+                    fillPreviewMeta(sanitizedPreviewMeta, sanitizedPreview);
+                    ThreeMFPreview.renderPair(sourceCanvas, sanitizedCanvas, sourcePreview, sanitizedPreview);
+                    log(`Preview ready: source ${sourcePreview.partCount} part(s), sanitized ${sanitizedPreview.partCount} part(s).`);
+                } catch (previewError) {
+                    console.error(previewError);
+                    previewArea.classList.add('hidden');
+                    log(`<span class="text-amber-400">Preview skipped:</span> ${previewError.message}`);
+                }
             } catch (error) {
                 console.error(error);
                 log(`<span class="text-red-500">ERROR:</span> ${error.message}`);

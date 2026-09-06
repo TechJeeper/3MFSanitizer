@@ -516,6 +516,17 @@
         return bits;
     }
 
+    function encodePaintState(state) {
+        const n = Number(state);
+        if (!Number.isInteger(n) || n <= 0) return "";
+        if (n <= 2) {
+            const nibble = ((n & 1) << 2) | (((n >> 1) & 1) << 3);
+            return nibble.toString(16).toUpperCase();
+        }
+        const extra = Math.min(n - 3, 15);
+        return extra.toString(16).toUpperCase() + "C";
+    }
+
     function decodePaintState(hex) {
         if (!hex) return 0;
         const bits = hexToBitstream(hex);
@@ -589,6 +600,13 @@
             chunks.push(`  <object id="${obj.id}">`);
             if (obj.name) chunks.push(`    <metadata key="name" value="${escapeXml(obj.name)}"/>`);
             chunks.push(`    <metadata key="extruder" value="${obj.extruder || 1}"/>`);
+            const parts = obj.volumes && obj.volumes.length ? obj.volumes : [{ name: obj.name, extruder: obj.extruder || 1 }];
+            parts.forEach((part, index) => {
+                chunks.push(`    <part id="${index + 1}" subtype="normal_part">`);
+                if (part.name) chunks.push(`      <metadata key="name" value="${escapeXml(part.name)}"/>`);
+                chunks.push(`      <metadata key="extruder" value="${part.extruder || obj.extruder || 1}"/>`);
+                chunks.push("    </part>");
+            });
             chunks.push("  </object>");
         }
         chunks.push("</config>", "");
@@ -706,6 +724,15 @@
             if (obj.extruder) {
                 chunks.push(`  <metadata type="object" key="extruder" value="${obj.extruder}"/>`);
             }
+            const volumes = obj.volumes && obj.volumes.length ? obj.volumes : [];
+            for (const vol of volumes) {
+                chunks.push(`  <volume firstid="${vol.firstid}" lastid="${vol.lastid}">`);
+                if (vol.name) {
+                    chunks.push(`   <metadata type="volume" key="name" value="${escapeXml(vol.name)}"/>`);
+                }
+                chunks.push(`   <metadata type="volume" key="extruder" value="${vol.extruder || obj.extruder || 1}"/>`);
+                chunks.push("  </volume>");
+            }
             chunks.push(" </object>");
         }
         chunks.push("</config>", "");
@@ -768,7 +795,7 @@
             );
         }
 
-        function emitPlacedMesh({ filePath, objectId, transform, extruder, name, printable }) {
+        function emitPlacedMesh({ filePath, objectId, transform, extruder, name, printable, volumes }) {
             const newId = ensureMesh(filePath, objectId, extruder);
             if (!newId) return;
             buildItems.push({
@@ -776,31 +803,28 @@
                 transform,
                 printable: printable != null ? printable : "1"
             });
-            objectMeta.push({ id: newId, name: name || "", extruder });
+            objectMeta.push({ id: newId, name: name || "", extruder, volumes: volumes || [] });
         }
 
-        function explodeNode(node, wrapper, printable) {
-            if (!node) return;
+        function gatherParts(node, wrapper, localTransform) {
+            if (!node) return [];
             if (node.kind === "mesh") {
-                emitPlacedMesh({
-                    filePath: node.filePath,
-                    objectId: node.objectId,
-                    transform: node.transform,
-                    extruder: wrapper.extruder || 1,
+                return [{
                     name: wrapper.name || "",
-                    printable
-                });
-                return;
+                    extruder: wrapper.extruder || 1,
+                    body: node.obj.body,
+                    localTransform: localTransform || "1 0 0 0 1 0 0 0 1 0 0 0"
+                }];
             }
-            const comps = node.obj.components || [];
-            if (!comps.length) return;
-            comps.forEach((c, index) => {
-                const childPath = c.path ? normalizePath(c.path) : node.filePath;
+            const out = [];
+            (node.obj.components || []).forEach((c, index) => {
                 const info = partInfo(wrapper, c.objectid, index);
-                const childTransform = formatTransform(multiplyTransform(node.transform, c.transform));
-                const child = resolveTarget(parsedModels, childPath, c.objectid, childTransform, new Set());
-                explodeNode(child, { name: info.name, extruder: info.extruder, parts: [] }, printable);
+                const childPath = c.path ? normalizePath(c.path) : node.filePath;
+                const childLocal = formatTransform(multiplyTransform(localTransform, c.transform));
+                const child = resolveTarget(parsedModels, childPath, c.objectid, c.transform, new Set());
+                out.push(...gatherParts(child, { name: info.name, extruder: info.extruder, parts: [] }, childLocal));
             });
+            return out;
         }
 
         const items = root.buildItems.length
@@ -818,10 +842,42 @@
                 logs.push("Skipped unresolved build item objectid=" + item.objectid);
                 continue;
             }
-            explodeNode(resolved, wrapper, item.printable);
-        }
-        if (buildItems.length > 1) {
-            logs.push("Split multi-material assembly into " + buildItems.length + " colored parts (one object per filament).");
+            const printable = item.printable != null ? item.printable : "1";
+            if (resolved.kind === "mesh") {
+                emitPlacedMesh({
+                    filePath: resolved.filePath,
+                    objectId: resolved.objectId,
+                    transform: resolved.transform,
+                    extruder: wrapper.extruder || 1,
+                    name: wrapper.name || "",
+                    printable
+                });
+                continue;
+            }
+            const parts = gatherParts(resolved, wrapper, "1 0 0 0 1 0 0 0 1 0 0 0");
+            if (!parts.length) continue;
+            const merged = mergePartsToMesh(parts, materialsId, colors);
+            const id = nextId++;
+            emittedMeshes.push({
+                id,
+                body: merged.body,
+                extruder: wrapper.extruder || parts[0].extruder,
+                merged: true
+            });
+            buildItems.push({
+                objectid: id,
+                transform: item.transform,
+                printable
+            });
+            objectMeta.push({
+                id,
+                name: wrapper.name || parts[0].name || "",
+                extruder: wrapper.extruder || parts[0].extruder,
+                volumes: merged.volumes
+            });
+            logs.push(
+                `Kept merged assembly "${wrapper.name || "object"}" with ${parts.length} colored parts as one object.`
+            );
         }
 
         if (!emittedMeshes.length && !emittedAssemblies.length) {
@@ -860,12 +916,14 @@
         resourceXml.push(" " + buildBasematerialsXml(materialsId, colors, types));
 
         for (const mesh of emittedMeshes) {
-            const cleanedBody = applyTriangleMaterials(
-                rewriteObjectBody(mesh.body, () => null).replace(/p:[\w.-]+\s*=\s*"[^"]*"\s*/g, ""),
-                materialsId,
-                mesh.extruder,
-                colors.length
-            );
+            const cleanedBody = mesh.merged
+                ? mesh.body
+                : applyTriangleMaterials(
+                    rewriteObjectBody(mesh.body, () => null).replace(/p:[\w.-]+\s*=\s*"[^"]*"\s*/g, ""),
+                    materialsId,
+                    mesh.extruder,
+                    colors.length
+                );
             const pindex = pindexFor(mesh.extruder);
             resourceXml.push(
                 ` <object id="${mesh.id}" type="model" pid="${materialsId}" pindex="${pindex}">${cleanedBody}</object>`
@@ -943,6 +1001,242 @@
 
     function logLine(log, message) {
         if (typeof log === "function") log(message);
+    }
+
+    function hexToRgb01(hex) {
+        const raw = displayColor(hex).replace(/^#/, "");
+        return [
+            parseInt(raw.slice(0, 2), 16) / 255,
+            parseInt(raw.slice(2, 4), 16) / 255,
+            parseInt(raw.slice(4, 6), 16) / 255
+        ];
+    }
+
+    function parseMeshGeometry(body) {
+        const vertices = [];
+        const vRe = /<vertex\b([^>]*)\/?>/gi;
+        let m;
+        while ((m = vRe.exec(body || ""))) {
+            const a = parseAttrs(m[1]);
+            vertices.push([parseFloat(a.x) || 0, parseFloat(a.y) || 0, parseFloat(a.z) || 0]);
+        }
+        const triangles = [];
+        const tRe = /<triangle\b([^>]*)\/?>/gi;
+        while ((m = tRe.exec(body || ""))) {
+            const a = parseAttrs(m[1]);
+            triangles.push({
+                v1: parseInt(a.v1, 10),
+                v2: parseInt(a.v2, 10),
+                v3: parseInt(a.v3, 10),
+                paint: a.paint_color || "",
+                p1: a.p1 != null && a.p1 !== "" ? parseInt(a.p1, 10) : null
+            });
+        }
+        return { vertices, triangles };
+    }
+
+    function transformPoint(point, matrix) {
+        const M = parseTransform(matrix);
+        const x = point[0];
+        const y = point[1];
+        const z = point[2];
+        return [
+            M[0] * x + M[1] * y + M[2] * z + M[9],
+            M[3] * x + M[4] * y + M[5] * z + M[10],
+            M[6] * x + M[7] * y + M[8] * z + M[11]
+        ];
+    }
+
+    function formatCoord(n) {
+        if (Object.is(n, -0)) return "0";
+        return String(Math.round(n * 1e7) / 1e7);
+    }
+
+    function mergePartsToMesh(parts, materialsId, colors) {
+        const vertexLines = [];
+        const triangleLines = [];
+        const volumes = [];
+        let vOffset = 0;
+        let tOffset = 0;
+        const paletteSize = colors.length || 1;
+
+        for (const part of parts) {
+            const geom = parseMeshGeometry(part.body);
+            for (const vertex of geom.vertices) {
+                const p = transformPoint(vertex, part.localTransform);
+                vertexLines.push(`     <vertex x="${formatCoord(p[0])}" y="${formatCoord(p[1])}" z="${formatCoord(p[2])}"/>`);
+            }
+            const defaultIdx = stateToMaterialIndex(0, part.extruder, paletteSize);
+            let tCount = 0;
+            for (const tri of geom.triangles) {
+                let idx = defaultIdx;
+                if (Number.isInteger(tri.p1)) idx = Math.min(Math.max(tri.p1, 0), paletteSize - 1);
+                else if (tri.paint) idx = stateToMaterialIndex(decodePaintState(tri.paint), part.extruder, paletteSize);
+                const paint = tri.paint || encodePaintState(part.extruder);
+                let extra = ` pid="${materialsId}" p1="${idx}"`;
+                if (paint) {
+                    extra += ` paint_color="${escapeXml(paint)}" slic3rpe:mmu_segmentation="${escapeXml(paint)}"`;
+                }
+                triangleLines.push(
+                    `     <triangle v1="${tri.v1 + vOffset}" v2="${tri.v2 + vOffset}" v3="${tri.v3 + vOffset}"${extra}/>`
+                );
+                tCount += 1;
+            }
+            if (tCount > 0) {
+                volumes.push({
+                    name: part.name,
+                    extruder: part.extruder,
+                    firstid: tOffset,
+                    lastid: tOffset + tCount - 1
+                });
+            }
+            vOffset += geom.vertices.length;
+            tOffset += tCount;
+        }
+
+        return {
+            body:
+                "\n   <mesh>\n    <vertices>\n" +
+                vertexLines.join("\n") +
+                "\n    </vertices>\n    <triangles>\n" +
+                triangleLines.join("\n") +
+                "\n    </triangles>\n   </mesh>\n  ",
+            volumes
+        };
+    }
+
+    function collectPlacedParts(parsedModels, rootPath, modelSettings) {
+        const root = parsedModels[pathKey(rootPath)];
+        if (!root) return [];
+        const placed = [];
+
+        function partInfo(wrapper, componentObjectId, componentIndex) {
+            const parts = wrapper.parts || [];
+            return (
+                parts.find((p) => String(p.id) === String(componentObjectId)) ||
+                parts[componentIndex] ||
+                { name: wrapper.name || "", extruder: wrapper.extruder || 1 }
+            );
+        }
+
+        function explodeNode(node, wrapper) {
+            if (!node) return;
+            if (node.kind === "mesh") {
+                placed.push({
+                    filePath: node.filePath,
+                    objectId: node.objectId,
+                    transform: node.transform,
+                    extruder: wrapper.extruder || 1,
+                    name: wrapper.name || "",
+                    body: node.obj.body
+                });
+                return;
+            }
+            const comps = node.obj.components || [];
+            comps.forEach((c, index) => {
+                const childPath = c.path ? normalizePath(c.path) : node.filePath;
+                const info = partInfo(wrapper, c.objectid, index);
+                const childTransform = formatTransform(multiplyTransform(node.transform, c.transform));
+                const child = resolveTarget(parsedModels, childPath, c.objectid, childTransform, new Set());
+                explodeNode(child, { name: info.name, extruder: info.extruder, parts: [] });
+            });
+        }
+
+        const items = root.buildItems.length
+            ? root.buildItems
+            : root.objects.map((o) => ({ objectid: o.id, transform: null }));
+
+        for (const item of items) {
+            const wrapper = modelSettings[String(item.objectid)] || {};
+            explodeNode(resolveTarget(parsedModels, rootPath, item.objectid, item.transform, new Set()), wrapper);
+        }
+        return placed;
+    }
+
+    async function loadProject(JSZip, input) {
+        const zip = await JSZip.loadAsync(input);
+        const filesByKey = indexZipFiles(zip);
+        const rootRec =
+            findZipFile(filesByKey, "3D/3dmodel.model") || findZipFile(filesByKey, "3d/3dmodel.model");
+        if (!rootRec) {
+            throw new Error("No valid 3D model found inside the 3MF file.");
+        }
+        let bambuSettings = {};
+        const projectRec = findZipFile(filesByKey, "Metadata/project_settings.config");
+        if (projectRec) {
+            try {
+                bambuSettings = extractBambuSettings(JSON.parse(await projectRec.entry.async("string")));
+            } catch (e) {
+                bambuSettings = {};
+            }
+        }
+        let modelSettings = {};
+        const modelSetRec = findZipFile(filesByKey, "Metadata/model_settings.config");
+        if (modelSetRec) {
+            try {
+                modelSettings = parseModelSettings(await modelSetRec.entry.async("string"));
+            } catch (e) {
+                modelSettings = {};
+            }
+        }
+        const modelXmlByPath = {};
+        for (const rec of collectModelFiles(filesByKey)) {
+            modelXmlByPath[normalizePath(rec.relativePath)] = await rec.entry.async("string");
+        }
+        return {
+            zip,
+            filesByKey,
+            rootRec,
+            bambuSettings,
+            modelSettings,
+            parsedModels: parseAllModels(modelXmlByPath)
+        };
+    }
+
+    async function extractPreviewMeshes(JSZip, input) {
+        const project = await loadProject(JSZip, input);
+        const palette = asArray(project.bambuSettings.filament_colour);
+        const colors = palette.length ? palette : ["#B0B0B0"];
+        const placed = collectPlacedParts(project.parsedModels, project.rootRec.relativePath, project.modelSettings);
+        const meshes = [];
+
+        for (const part of placed) {
+            const geom = parseMeshGeometry(part.body);
+            if (!geom.triangles.length) continue;
+            const positions = [];
+            const vertexColors = [];
+            const defaultIdx = stateToMaterialIndex(0, part.extruder, colors.length);
+            for (const tri of geom.triangles) {
+                let idx = defaultIdx;
+                if (Number.isInteger(tri.p1)) {
+                    idx = Math.min(Math.max(tri.p1, 0), colors.length - 1);
+                } else if (tri.paint) {
+                    idx = stateToMaterialIndex(decodePaintState(tri.paint), part.extruder, colors.length);
+                }
+                const rgb = hexToRgb01(colors[idx] || "#B0B0B0");
+                const pts = [tri.v1, tri.v2, tri.v3].map((vi) =>
+                    transformPoint(geom.vertices[vi] || [0, 0, 0], part.transform)
+                );
+                for (const p of pts) {
+                    positions.push(p[0], p[1], p[2]);
+                    vertexColors.push(rgb[0], rgb[1], rgb[2]);
+                }
+            }
+            meshes.push({
+                name: part.name,
+                extruder: part.extruder,
+                triangleCount: geom.triangles.length,
+                positions,
+                colors: vertexColors
+            });
+        }
+
+        return {
+            meshes,
+            palette: colors,
+            partCount: meshes.length,
+            triangleCount: meshes.reduce((sum, mesh) => sum + mesh.triangleCount, 0)
+        };
     }
 
     async function sanitize3mf(JSZip, input, options) {
@@ -1087,8 +1381,10 @@
         parseTransform,
         displayColor,
         decodePaintState,
+        encodePaintState,
         stateToMaterialIndex,
         applyTriangleMaterials,
+        extractPreviewMeshes,
         BAMBU_TO_SLIC3R
     };
 });
