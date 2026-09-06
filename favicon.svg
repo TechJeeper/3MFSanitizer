@@ -1,0 +1,24 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 32 32" role="img" aria-label="3MF Sanitizer">
+  <defs>
+    <linearGradient id="tile" x1="6" y1="2" x2="28" y2="30" gradientUnits="userSpaceOnUse">
+      <stop stop-color="#0b1220"/>
+      <stop offset="1" stop-color="#020617"/>
+    </linearGradient>
+    <linearGradient id="glow" x1="8" y1="4" x2="26" y2="28" gradientUnits="userSpaceOnUse">
+      <stop stop-color="#38bdf8" stop-opacity=".35"/>
+      <stop offset="1" stop-color="#6366f1" stop-opacity=".22"/>
+    </linearGradient>
+    <linearGradient id="top" x1="16" y1="7" x2="16" y2="16" gradientUnits="userSpaceOnUse">
+      <stop stop-color="#e0f2fe"/>
+      <stop offset="1" stop-color="#7dd3fc"/>
+    </linearGradient>
+  </defs>
+  <rect width="32" height="32" rx="8" fill="url(#tile)"/>
+  <rect x="1" y="1" width="30" height="30" rx="7" fill="url(#glow)"/>
+  <path d="M16 7.6 24.6 12.1 16 16.6 7.4 12.1Z" fill="url(#top)"/>
+  <path d="M7.4 12.1 16 16.6v8.8L7.4 20.9Z" fill="#0ea5e9"/>
+  <path d="M16 16.6 24.6 12.1v8.8L16 25.4Z" fill="#4f46e5"/>
+  <path d="M16 7.6 24.6 12.1 16 16.6 7.4 12.1Z" fill="none" stroke="#f8fafc" stroke-opacity=".22" stroke-width=".55"/>
+  <path d="M24.8 5.4 25.7 7.8l2.4.9-2.4.9-.9 2.4-.9-2.4-2.4-.9 2.4-.9Z" fill="#fde68a"/>
+  <circle cx="24.8" cy="8.7" r=".6" fill="#fffbeb"/>
+</svg>

@@ -212,14 +212,6 @@
         });
         scene.add(group);
         group.updateMatrixWorld(true);
-        const box = new THREE.Box3().setFromObject(group);
-        const minY = isFinite(box.min.y) ? box.min.y : 0;
-        const size = isFinite(box.max.x)
-            ? Math.max(box.max.x - box.min.x, box.max.y - box.min.y, box.max.z - box.min.z, 8)
-            : 20;
-        const grid = new THREE.GridHelper(size * 1.4, 12, 0x334155, 0x1e293b);
-        grid.position.y = minY;
-        scene.add(grid);
         return { scene, model: group };
     }
 
