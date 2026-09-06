@@ -1,0 +1,11 @@
+{
+  "name": "3mf-sanitizer",
+  "private": true,
+  "description": "Strip Bambu Studio 3MF production-extension data that breaks other slicers, while keeping colors and designer print settings.",
+  "scripts": {
+    "test": "node --test tests/*.test.js"
+  },
+  "devDependencies": {
+    "jszip": "^3.10.1"
+  }
+}

@@ -1,0 +1,293 @@
+const { test, describe } = require("node:test");
+const assert = require("node:assert/strict");
+const fs = require("node:fs");
+const path = require("node:path");
+const JSZip = require("jszip");
+const sanitizer = require("../sanitizer.js");
+
+const SAMPLE_BAMBU = "C:\\Users\\cld\\Downloads\\Knafs_Yuti_Scales.3mf";
+
+function modelXml(body) {
+    return `<?xml version="1.0" encoding="UTF-8"?>
+<model unit="millimeter" xml:lang="en-US" xmlns="http://schemas.microsoft.com/3dmanufacturing/core/2015/02" xmlns:p="http://schemas.microsoft.com/3dmanufacturing/production/2015/06" requiredextensions="p">
+ <metadata name="Title">Test Cube</metadata>
+ <metadata name="Application">BambuStudio-02.07.01.57</metadata>
+ <resources>
+${body}
+ </resources>
+ <build>
+  <item objectid="2" p:UUID="bbbb" transform="1 0 0 0 1 0 0 0 1 10 20 3" printable="1"/>
+ </build>
+</model>
+`;
+}
+
+function meshObjectXml() {
+    return `<?xml version="1.0" encoding="UTF-8"?>
+<model unit="millimeter" xmlns="http://schemas.microsoft.com/3dmanufacturing/core/2015/02" xmlns:p="http://schemas.microsoft.com/3dmanufacturing/production/2015/06" requiredextensions="p">
+ <resources>
+  <object id="1" p:UUID="aaaa" type="other">
+   <mesh>
+    <vertices>
+     <vertex x="0" y="0" z="0"/>
+     <vertex x="1" y="0" z="0"/>
+     <vertex x="0" y="1" z="0"/>
+    </vertices>
+    <triangles>
+     <triangle v1="0" v2="1" v3="2" paint_color="2C"/>
+    </triangles>
+   </mesh>
+  </object>
+ </resources>
+ <build/>
+</model>
+`;
+}
+
+async function makeBambuZip(overrides = {}) {
+    const zip = new JSZip();
+    const root = overrides.rootXml || modelXml(`  <object id="2" p:UUID="root" type="model">
+   <components>
+    <component p:path="/3D/Objects/object_1.model" objectid="1" transform="1 0 0 0 1 0 0 0 1 0 0 0"/>
+   </components>
+  </object>`);
+    zip.file("3D/3dmodel.model", root);
+    zip.file("3D/Objects/object_1.model", overrides.objectXml || meshObjectXml());
+    zip.file("[Content_Types].xml", '<?xml version="1.0"?><Types/>');
+    zip.file("_rels/.rels", '<?xml version="1.0"?><Relationships/>');
+    zip.file(
+        "Metadata/project_settings.config",
+        JSON.stringify(
+            overrides.settings || {
+                layer_height: "0.2",
+                wall_loops: "3",
+                line_width: "0.42",
+                inner_wall_line_width: "0.45",
+                outer_wall_line_width: "0.42",
+                sparse_infill_density: "15%",
+                sparse_infill_pattern: "crosshatch",
+                enable_support: "1",
+                filament_colour: ["#FFFFFF", "#C52C18"],
+                filament_type: ["PLA", "PLA"],
+                printer_model: "Bambu Lab A1 mini",
+                machine_start_gcode: "M104 S200",
+                printable_area: ["0x0", "180x180"]
+            }
+        )
+    );
+    zip.file(
+        "Metadata/model_settings.config",
+        `<?xml version="1.0"?>
+<config>
+  <object id="2">
+    <metadata key="name" value="DesignerPart"/>
+    <metadata key="extruder" value="2"/>
+  </object>
+</config>`
+    );
+    zip.file("Metadata/slice_info.config", "<config/>");
+    zip.file("Metadata/plate_1.gcode", "; gcode");
+    zip.file("3D/_rels/3dmodel.model.rels", "<Relationships/>");
+    return zip.generateAsync({ type: "uint8array" });
+}
+
+async function sanitizeBytes(bytes) {
+    return sanitizer.sanitize3mf(JSZip, bytes);
+}
+
+async function loadOutput(result) {
+    return JSZip.loadAsync(result.bytes);
+}
+
+describe("extractBambuSettings", () => {
+    test("reads flat Bambu project_settings, not process_settings.1", () => {
+        const flat = { wall_loops: "4", layer_height: "0.16", line_width: "0.42" };
+        assert.equal(sanitizer.extractBambuSettings(flat).wall_loops, "4");
+        assert.equal(sanitizer.extractBambuSettings(flat).process_settings, undefined);
+    });
+
+    test("still merges legacy nested process_settings.1 when present", () => {
+        const nested = {
+            printer_model: "X1",
+            process_settings: { "1": { wall_loops: "6" } }
+        };
+        assert.equal(sanitizer.extractBambuSettings(nested).wall_loops, "6");
+    });
+});
+
+describe("mapSettingsToSlic3r", () => {
+    test("maps walls, layer height, line widths, and keeps infill as percent", () => {
+        const mapped = sanitizer.mapSettingsToSlic3r({
+            layer_height: "0.2",
+            wall_loops: "3",
+            line_width: "0.42",
+            inner_wall_line_width: "0.45",
+            outer_wall_line_width: "0.42",
+            sparse_infill_density: "15%",
+            sparse_infill_pattern: "crosshatch",
+            enable_support: "1"
+        });
+        assert.equal(mapped.layer_height, "0.2");
+        assert.equal(mapped.perimeters, "3");
+        assert.equal(mapped.extrusion_width, "0.42");
+        assert.equal(mapped.perimeter_extrusion_width, "0.45");
+        assert.equal(mapped.external_perimeter_extrusion_width, "0.42");
+        assert.equal(mapped.fill_density, "15%");
+        assert.equal(mapped.fill_pattern, "grid");
+        assert.equal(mapped.support_material, "1");
+    });
+});
+
+describe("sanitizeProjectSettings", () => {
+    test("keeps designer process settings and strips printer/machine keys", () => {
+        const cleaned = sanitizer.sanitizeProjectSettings({
+            wall_loops: "3",
+            line_width: "0.42",
+            printer_model: "Bambu Lab A1 mini",
+            machine_start_gcode: "M104",
+            printable_area: ["0x0"]
+        });
+        assert.equal(cleaned.wall_loops, "3");
+        assert.equal(cleaned.line_width, "0.42");
+        assert.equal(cleaned.printer_model, undefined);
+        assert.equal(cleaned.machine_start_gcode, undefined);
+        assert.equal(cleaned.printable_area, undefined);
+    });
+});
+
+describe("sanitize3mf", () => {
+    test("flattens production extension and drops requiredextensions", async () => {
+        const result = await sanitizeBytes(await makeBambuZip());
+        const out = await loadOutput(result);
+        assert.equal(!!out.file("3D/Objects/object_1.model"), false);
+        const xml = await out.file("3D/3dmodel.model").async("string");
+        assert.match(xml, /<vertex /);
+        assert.match(xml, /<triangle /);
+        assert.doesNotMatch(xml, /requiredextensions/);
+        assert.doesNotMatch(xml, /p:path/);
+        assert.doesNotMatch(xml, /xmlns:p=/);
+        assert.ok(result.report.flattened);
+    });
+
+    test("preserves paint_color and filament colors as basematerials", async () => {
+        const result = await sanitizeBytes(await makeBambuZip());
+        const out = await loadOutput(result);
+        const xml = await out.file("3D/3dmodel.model").async("string");
+        assert.match(xml, /paint_color="2C"/);
+        assert.match(xml, /<basematerials /);
+        assert.match(xml, /displaycolor="#FFFFFFFF"/);
+        assert.match(xml, /displaycolor="#C52C18FF"/);
+        assert.equal(result.report.paintColors, 1);
+        assert.equal(result.report.triangles, 1);
+        assert.equal(result.report.vertices, 3);
+    });
+
+    test("writes slic3r settings without nesting inside existing metadata", async () => {
+        const result = await sanitizeBytes(await makeBambuZip());
+        const out = await loadOutput(result);
+        const xml = await out.file("3D/3dmodel.model").async("string");
+        assert.match(xml, /<metadata name="Title">Test Cube<\/metadata>/);
+        assert.match(xml, /<metadata name="slic3r:perimeters">3<\/metadata>/);
+        assert.match(xml, /<metadata name="slic3r:fill_density">15%<\/metadata>/);
+        assert.doesNotMatch(xml, /<metadata name="Title">[^<]*<metadata name="slic3r:/);
+        const slic3r = await out.file("Metadata/Slic3r_PE.config").async("string");
+        assert.match(slic3r, /; perimeters = 3/);
+        assert.match(slic3r, /; extrusion_width = 0.42/);
+        assert.match(slic3r, /; fill_density = 15%/);
+    });
+
+    test("strips gcode, slice_info, and Bambu printer profile", async () => {
+        const result = await sanitizeBytes(await makeBambuZip());
+        const out = await loadOutput(result);
+        assert.equal(!!out.file("Metadata/plate_1.gcode"), false);
+        assert.equal(!!out.file("Metadata/slice_info.config"), false);
+        assert.equal(!!out.file("3D/_rels/3dmodel.model.rels"), false);
+        const project = JSON.parse(await out.file("Metadata/project_settings.config").async("string"));
+        assert.equal(project.wall_loops, "3");
+        assert.equal(project.printer_model, undefined);
+        assert.equal(project.machine_start_gcode, undefined);
+    });
+
+    test("converts type=other to model and remaps shared production parts", async () => {
+        const result = await sanitizeBytes(await makeBambuZip());
+        const out = await loadOutput(result);
+        const xml = await out.file("3D/3dmodel.model").async("string");
+        assert.doesNotMatch(xml, /type="other"/);
+        assert.match(xml, /type="model"/);
+        assert.match(xml, /<item objectid="/);
+    });
+
+    test("rejects archives without a 3dmodel.model", async () => {
+        const zip = new JSZip();
+        zip.file("readme.txt", "no model");
+        const bytes = await zip.generateAsync({ type: "uint8array" });
+        await assert.rejects(() => sanitizeBytes(bytes), /No valid 3D model/);
+    });
+
+    test("still sanitizes an already-flat generic 3MF", async () => {
+        const zip = new JSZip();
+        zip.file(
+            "3D/3dmodel.model",
+            `<?xml version="1.0"?>
+<model unit="millimeter" xmlns="http://schemas.microsoft.com/3dmanufacturing/core/2015/02">
+ <resources>
+  <object id="1" type="model">
+   <mesh>
+    <vertices><vertex x="0" y="0" z="0"/><vertex x="1" y="0" z="0"/><vertex x="0" y="1" z="0"/></vertices>
+    <triangles><triangle v1="0" v2="1" v3="2"/></triangles>
+   </mesh>
+  </object>
+ </resources>
+ <build><item objectid="1" transform="1 0 0 0 1 0 0 0 1 0 0 0"/></build>
+</model>`
+        );
+        const bytes = await zip.generateAsync({ type: "uint8array" });
+        const result = await sanitizeBytes(bytes);
+        const out = await loadOutput(result);
+        const xml = await out.file("3D/3dmodel.model").async("string");
+        assert.match(xml, /<triangle /);
+        assert.equal(result.report.triangles, 1);
+        assert.equal(result.report.flattened, false);
+    });
+});
+
+describe("real Bambu Studio 3MF", () => {
+    test("Knafs_Yuti_Scales flattens, keeps paint and designer settings", async (t) => {
+        if (!fs.existsSync(SAMPLE_BAMBU)) {
+            t.skip("sample 3MF not on disk");
+            return;
+        }
+        const input = fs.readFileSync(SAMPLE_BAMBU);
+        const source = await JSZip.loadAsync(input);
+        const srcObject = await source.file("3D/Objects/object_1.model").async("string");
+        const srcVerts = (srcObject.match(/<vertex\b/g) || []).length;
+        const srcTris = (srcObject.match(/<triangle\b/g) || []).length;
+        const srcPaint = (srcObject.match(/paint_color="/g) || []).length;
+
+        const result = await sanitizer.sanitize3mf(JSZip, input);
+        const out = await JSZip.loadAsync(result.bytes);
+        const xml = await out.file("3D/3dmodel.model").async("string");
+
+        assert.equal(!!out.file("3D/Objects/object_1.model"), false);
+        assert.doesNotMatch(xml, /requiredextensions/);
+        assert.doesNotMatch(xml, /p:path=/);
+        assert.equal(result.report.vertices, srcVerts);
+        assert.equal(result.report.triangles, srcTris);
+        assert.equal(result.report.paintColors, srcPaint);
+        assert.match(xml, /paint_color="/);
+        assert.match(xml, /<basematerials /);
+
+        const slic3r = await out.file("Metadata/Slic3r_PE.config").async("string");
+        assert.match(slic3r, /; layer_height = 0.2/);
+        assert.match(slic3r, /; perimeters = 2/);
+        assert.match(slic3r, /; extrusion_width = 0.42/);
+        assert.match(slic3r, /; fill_density = 15%/);
+
+        const project = JSON.parse(await out.file("Metadata/project_settings.config").async("string"));
+        assert.equal(project.wall_loops, "2");
+        assert.equal(project.line_width, "0.42");
+        assert.equal(project.printer_model, undefined);
+        assert.ok(Array.isArray(project.filament_colour));
+        assert.equal(project.filament_colour.length, 5);
+    });
+});
