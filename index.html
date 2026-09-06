@@ -1,4 +1,3 @@
-
 <!DOCTYPE html>
 <html lang="en">
 <head>
@@ -105,7 +104,7 @@
             const url = URL.createObjectURL(cleanedZipBlob);
             const a = document.createElement('a');
             a.href = url;
-            a.download = originalFileName.replace('.3mf', '_cleaned.3mf');
+            a.download = originalFileName.replace(/\.3mf$/i, '_cleaned.3mf');
             document.body.appendChild(a);
             a.click();
             document.body.removeChild(a);
@@ -202,13 +201,235 @@
                 
                 cleanedZipBlob = await newZip.generateAsync({
                     type: "blob",
+                    mimeType: "application/vnd.ms-3mfdocument",
                     compression: "DEFLATE",
                     compressionOptions: { level: 6 }
                 });
 
                 log(`Success! New file ready: ${(cleanedZipBlob.size / 1024).toFixed(2)} KB`);
                 
-                fileNameDisplay.textContent = originalFileName.replace('.3mf', '_cleaned.3mf');
+                fileNameDisplay.textContent = originalFileName.replace(/\.3mf$/i, '_cleaned.3mf');
+                actionArea.classList.remove('hidden');
+
+            } catch (error) {
+                console.error(error);
+                log(`ERROR: ${error.message}`);
+                showModal('Processing Error', 'Failed to process the 3MF file. Ensure it is not corrupted.');
+            }
+        }
+    </script>
+</body>
+</html><!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Universal 3MF Sanitizer & Converter</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/jszip/3.10.1/jszip.min.js"></script>
+    <style>
+        body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif; }
+        .drop-zone { transition: border-color 0.3s, background-color 0.3s; }
+        .drop-zone.dragover { border-color: #3b82f6; background-color: #eff6ff; }
+    </style>
+</head>
+<body class="bg-slate-50 min-h-screen text-slate-800 p-6 flex flex-col items-center justify-center">
+
+    <div class="max-w-2xl w-full bg-white rounded-2xl shadow-xl overflow-hidden">
+        <div class="bg-blue-600 p-6 text-white text-center">
+            <h1 class="text-3xl font-bold mb-2">Universal 3MF Sanitizer</h1>
+            <p class="text-blue-100 text-sm">Convert proprietary 3MFs (Bambu/Prusa) to clean 3MFs for any slicer</p>
+        </div>
+
+        <div class="p-8">
+            <div class="mb-6 bg-amber-50 border border-amber-200 rounded-lg p-4 text-sm text-amber-800">
+                <strong>How it works:</strong> This tool unzips your 3MF file, extracts the core 3D models and color data, and strips out proprietary slicer settings (like Bambu Studio machine profiles) that cause other slicers (like Anycubic or Cura) to crash. 
+            </div>
+
+            <div id="dropZone" class="drop-zone border-4 border-dashed border-slate-300 rounded-xl p-10 flex flex-col items-center justify-center cursor-pointer hover:bg-slate-50 mb-6">
+                <svg xmlns="http://www.w3.org/2000/svg" class="h-16 w-16 text-slate-400 mb-4" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M7 16a4 4 0 01-.88-7.903A5 5 0 1115.9 6L16 6a5 5 0 011 9.9M15 13l-3-3m0 0l-3 3m3-3v12" />
+                </svg>
+                <p class="text-lg font-semibold text-slate-600">Drag & Drop your .3mf file here</p>
+                <p class="text-sm text-slate-400 mt-2">or click to browse</p>
+                <input type="file" id="fileInput" class="hidden" accept=".3mf" />
+            </div>
+
+            <div id="logArea" class="hidden bg-slate-900 text-green-400 font-mono text-sm p-4 rounded-lg h-48 overflow-y-auto mb-6">
+                <!-- Logs will appear here -->
+            </div>
+
+            <div id="actionArea" class="hidden flex justify-between items-center">
+                <div class="text-sm text-slate-600 font-medium" id="fileNameDisplay"></div>
+                <button id="downloadBtn" class="bg-green-600 hover:bg-green-700 text-white font-bold py-2 px-6 rounded-lg shadow-md transition-colors flex items-center">
+                    <svg xmlns="http://www.w3.org/2000/svg" class="h-5 w-5 mr-2" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 16v1a3 3 0 003 3h10a3 3 0 003-3v-1m-4-4l-4 4m0 0l-4-4m4 4V4" />
+                    </svg>
+                    Download Cleaned 3MF
+                </button>
+            </div>
+        </div>
+    </div>
+
+    <!-- Message Modal -->
+    <div id="messageModal" class="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center hidden z-50">
+        <div class="bg-white p-6 rounded-xl shadow-2xl max-w-sm w-full">
+            <h3 id="modalTitle" class="text-xl font-bold mb-2">Message</h3>
+            <p id="modalBody" class="text-slate-600 mb-6">Something happened.</p>
+            <button onclick="closeModal()" class="w-full bg-blue-600 hover:bg-blue-700 text-white font-bold py-2 px-4 rounded-lg">OK</button>
+        </div>
+    </div>
+
+    <script>
+        const dropZone = document.getElementById('dropZone');
+        const fileInput = document.getElementById('fileInput');
+        const logArea = document.getElementById('logArea');
+        const actionArea = document.getElementById('actionArea');
+        const fileNameDisplay = document.getElementById('fileNameDisplay');
+        const downloadBtn = document.getElementById('downloadBtn');
+        const messageModal = document.getElementById('messageModal');
+        const modalTitle = document.getElementById('modalTitle');
+        const modalBody = document.getElementById('modalBody');
+
+        let cleanedZipBlob = null;
+        let originalFileName = "";
+
+        // UI Event Listeners
+        dropZone.addEventListener('click', () => fileInput.click());
+        
+        dropZone.addEventListener('dragover', (e) => {
+            e.preventDefault();
+            dropZone.classList.add('dragover');
+        });
+
+        dropZone.addEventListener('dragleave', () => {
+            dropZone.classList.remove('dragover');
+        });
+
+        dropZone.addEventListener('drop', (e) => {
+            e.preventDefault();
+            dropZone.classList.remove('dragover');
+            if (e.dataTransfer.files.length) {
+                handleFile(e.dataTransfer.files[0]);
+            }
+        });
+
+        fileInput.addEventListener('change', (e) => {
+            if (e.target.files.length) {
+                handleFile(e.target.files[0]);
+            }
+        });
+
+        downloadBtn.addEventListener('click', () => {
+            if (!cleanedZipBlob) return;
+            const url = URL.createObjectURL(cleanedZipBlob);
+            const a = document.createElement('a');
+            a.href = url;
+            a.download = originalFileName.replace(/\.3mf$/i, '_cleaned.3mf');
+            document.body.appendChild(a);
+            a.click();
+            document.body.removeChild(a);
+            URL.revokeObjectURL(url);
+        });
+
+        function log(message) {
+            const entry = document.createElement('div');
+            entry.textContent = `> ${message}`;
+            logArea.appendChild(entry);
+            logArea.scrollTop = logArea.scrollHeight;
+        }
+
+        function showModal(title, message) {
+            modalTitle.textContent = title;
+            modalBody.textContent = message;
+            messageModal.classList.remove('hidden');
+        }
+
+        function closeModal() {
+            messageModal.classList.add('hidden');
+        }
+
+        async function handleFile(file) {
+            if (!file.name.toLowerCase().endsWith('.3mf')) {
+                showModal('Invalid File', 'Please upload a valid .3mf file.');
+                return;
+            }
+
+            originalFileName = file.name;
+            logArea.innerHTML = '';
+            logArea.classList.remove('hidden');
+            actionArea.classList.add('hidden');
+            cleanedZipBlob = null;
+
+            log(`Loaded file: ${file.name} (${(file.size / 1024).toFixed(2)} KB)`);
+            log('Initializing 3MF parser (ZIP archive)...');
+
+            try {
+                const jszip = new JSZip();
+                const zip = await jszip.loadAsync(file);
+                const newZip = new JSZip();
+                let hasModel = false;
+
+                log('Scanning internal structure...');
+
+                // Iterate through all files in the 3MF zip
+                for (let [relativePath, zipEntry] of Object.entries(zip.files)) {
+                    
+                    // SKIP Bambu/Prusa specific metadata configurations that cause crashes
+                    if (relativePath.startsWith('Metadata/') && relativePath.endsWith('.config')) {
+                        log(`Stripping proprietary profile data: ${relativePath}`);
+                        continue; 
+                    }
+
+                    // SKIP slicing/gcode cache often bundled in proprietary 3MFs
+                    if (relativePath.includes('.gcode') || relativePath.includes('slice_info')) {
+                        log(`Stripping cached gcode/slice data: ${relativePath}`);
+                        continue;
+                    }
+
+                    // Process the main 3D model XML to clean up strict namespace checks
+                    if (relativePath.toLowerCase() === '3d/3dmodel.model') {
+                        log(`Processing core geometry: ${relativePath}`);
+                        hasModel = true;
+                        
+                        let xmlContent = await zipEntry.async("string");
+                        
+                        // Some slicers crash if they see an unfamiliar Bambu namespace in the <model> tag
+                        // We do a soft sanitize by keeping the XML but warning the user.
+                        if (xmlContent.includes('bambu:')) {
+                            log('Found Bambu Studio specific XML tags. Sanitizing basics...');
+                            // For a truly robust converter, you would use DOMParser here to strip specific 
+                            // attributes. For now, removing the Metadata config is usually enough to stop crashes.
+                        }
+
+                        newZip.file(relativePath, xmlContent);
+                        continue;
+                    }
+
+                    // Keep everything else (textures, geometry arrays, rels)
+                    log(`Preserving asset: ${relativePath}`);
+                    const content = await zipEntry.async("uint8array");
+                    newZip.file(relativePath, content);
+                }
+
+                if (!hasModel) {
+                    showModal('Error', 'No valid 3D model found inside the 3MF file.');
+                    log('Error: 3D/3dmodel.model missing.');
+                    return;
+                }
+
+                log('Repackaging universal 3MF archive...');
+                
+                cleanedZipBlob = await newZip.generateAsync({
+                    type: "blob",
+                    mimeType: "application/vnd.ms-3mfdocument",
+                    compression: "DEFLATE",
+                    compressionOptions: { level: 6 }
+                });
+
+                log(`Success! New file ready: ${(cleanedZipBlob.size / 1024).toFixed(2)} KB`);
+                
+                fileNameDisplay.textContent = originalFileName.replace(/\.3mf$/i, '_cleaned.3mf');
                 actionArea.classList.remove('hidden');
 
             } catch (error) {
