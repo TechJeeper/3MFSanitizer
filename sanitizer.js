@@ -316,18 +316,32 @@
             const id = parseAttrs(m[1]).id;
             if (!id) continue;
             const body = m[2];
+            const partAt = body.search(/<part\b/i);
+            const objectHead = partAt >= 0 ? body.slice(0, partAt) : body;
             const meta = {};
             const metaRe = /<metadata\b([^>]*)\/?>/gi;
             let mm;
-            while ((mm = metaRe.exec(body))) {
+            while ((mm = metaRe.exec(objectHead))) {
                 const attrs = parseAttrs(mm[1]);
                 if (attrs.key) meta[attrs.key] = attrs.value;
             }
-            const partRe = /<part\b([^>]*)>/gi;
             const parts = [];
+            const partRe = /<part\b([^>]*)>([\s\S]*?)<\/part>/gi;
             let p;
             while ((p = partRe.exec(body))) {
-                parts.push(parseAttrs(p[1]));
+                const partAttrs = parseAttrs(p[1]);
+                const partMeta = {};
+                const partMetaRe = /<metadata\b([^>]*)\/?>/gi;
+                let pm;
+                while ((pm = partMetaRe.exec(p[2]))) {
+                    const attrs = parseAttrs(pm[1]);
+                    if (attrs.key) partMeta[attrs.key] = attrs.value;
+                }
+                parts.push({
+                    id: partAttrs.id,
+                    name: partMeta.name || "",
+                    extruder: partMeta.extruder ? parseInt(partMeta.extruder, 10) : (meta.extruder ? parseInt(meta.extruder, 10) : 1)
+                });
             }
             objects[id] = {
                 id,
@@ -588,6 +602,7 @@
         if (p.startsWith("3d/objects/")) return true;
         if (p.startsWith("3d/_rels/")) return true;
         if (p.startsWith("auxiliaries/")) return true;
+        if (p.startsWith("metadata/_rels/")) return true;
         if (p.includes("custom_gcode")) return true;
         if (p.includes("filament_settings")) return true;
         if (p.includes("filament_sequence")) return true;
@@ -744,22 +759,48 @@
             return id;
         }
 
-        function emitAssembly(node, wrapperMeta) {
-            const src = node.obj;
-            const id = nextId++;
-            const resolveComponentId = (attrs) => {
-                const childPath = attrs["p:path"] || attrs.path ? normalizePath(attrs["p:path"] || attrs.path) : node.filePath;
-                const child = getObject(parsedModels, childPath, attrs.objectid);
-                if (!child) return null;
-                if (child.hasMesh) return ensureMesh(childPath, attrs.objectid, wrapperMeta.extruder);
-                const nested = resolveTarget(parsedModels, childPath, attrs.objectid, attrs.transform, new Set());
-                if (!nested) return null;
-                if (nested.kind === "mesh") return ensureMesh(nested.filePath, nested.objectId, wrapperMeta.extruder);
-                return emitAssembly(nested, wrapperMeta);
-            };
-            const body = rewriteObjectBody(src.body, resolveComponentId);
-            emittedAssemblies.push({ id, body, extruder: wrapperMeta.extruder, name: wrapperMeta.name });
-            return id;
+        function partInfo(wrapper, componentObjectId, componentIndex) {
+            const parts = wrapper.parts || [];
+            return (
+                parts.find((p) => String(p.id) === String(componentObjectId)) ||
+                parts[componentIndex] ||
+                { name: wrapper.name || "", extruder: wrapper.extruder || 1 }
+            );
+        }
+
+        function emitPlacedMesh({ filePath, objectId, transform, extruder, name, printable }) {
+            const newId = ensureMesh(filePath, objectId, extruder);
+            if (!newId) return;
+            buildItems.push({
+                objectid: newId,
+                transform,
+                printable: printable != null ? printable : "1"
+            });
+            objectMeta.push({ id: newId, name: name || "", extruder });
+        }
+
+        function explodeNode(node, wrapper, printable) {
+            if (!node) return;
+            if (node.kind === "mesh") {
+                emitPlacedMesh({
+                    filePath: node.filePath,
+                    objectId: node.objectId,
+                    transform: node.transform,
+                    extruder: wrapper.extruder || 1,
+                    name: wrapper.name || "",
+                    printable
+                });
+                return;
+            }
+            const comps = node.obj.components || [];
+            if (!comps.length) return;
+            comps.forEach((c, index) => {
+                const childPath = c.path ? normalizePath(c.path) : node.filePath;
+                const info = partInfo(wrapper, c.objectid, index);
+                const childTransform = formatTransform(multiplyTransform(node.transform, c.transform));
+                const child = resolveTarget(parsedModels, childPath, c.objectid, childTransform, new Set());
+                explodeNode(child, { name: info.name, extruder: info.extruder, parts: [] }, printable);
+            });
         }
 
         const items = root.buildItems.length
@@ -777,22 +818,10 @@
                 logs.push("Skipped unresolved build item objectid=" + item.objectid);
                 continue;
             }
-            const extruder = wrapper.extruder || 1;
-            const name = wrapper.name || "";
-            let newId;
-            if (resolved.kind === "mesh") {
-                newId = ensureMesh(resolved.filePath, resolved.objectId, extruder);
-            } else {
-                newId = emitAssembly(resolved, { extruder, name });
-            }
-            if (!newId) continue;
-            const printable = item.printable != null ? item.printable : "1";
-            buildItems.push({
-                objectid: newId,
-                transform: resolved.transform,
-                printable
-            });
-            objectMeta.push({ id: newId, name, extruder });
+            explodeNode(resolved, wrapper, item.printable);
+        }
+        if (buildItems.length > 1) {
+            logs.push("Split multi-material assembly into " + buildItems.length + " colored parts (one object per filament).");
         }
 
         if (!emittedMeshes.length && !emittedAssemblies.length) {

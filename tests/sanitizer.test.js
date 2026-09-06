@@ -6,6 +6,7 @@ const JSZip = require("jszip");
 const sanitizer = require("../sanitizer.js");
 
 const SAMPLE_BAMBU = "C:\\Users\\cld\\Downloads\\Knafs_Yuti_Scales.3mf";
+const SAMPLE_MAKERCHIP = "C:\\Users\\cld\\Downloads\\K2_MakerChip_Sample.3mf";
 
 function modelXml(body) {
     return `<?xml version="1.0" encoding="UTF-8"?>
@@ -308,6 +309,83 @@ describe("sanitize3mf", () => {
         assert.equal(result.report.flattened, false);
         assert.match(xml, /pid="/);
     });
+
+    test("explodes multi-part assemblies into one object per filament", async () => {
+        const zip = new JSZip();
+        zip.file(
+            "3D/3dmodel.model",
+            `<?xml version="1.0"?>
+<model unit="millimeter" xmlns="http://schemas.microsoft.com/3dmanufacturing/core/2015/02" xmlns:p="http://schemas.microsoft.com/3dmanufacturing/production/2015/06" requiredextensions="p">
+ <resources>
+  <object id="6" type="model">
+   <components>
+    <component p:path="/3D/Objects/object_1.model" objectid="1" transform="1 0 0 0 1 0 0 0 1 0 0 0"/>
+    <component p:path="/3D/Objects/object_1.model" objectid="2" transform="1 0 0 0 1 0 0 0 1 5 0 0"/>
+   </components>
+  </object>
+ </resources>
+ <build><item objectid="6" transform="1 0 0 0 1 0 0 0 1 10 20 3" printable="1"/></build>
+</model>`
+        );
+        zip.file(
+            "3D/Objects/object_1.model",
+            `<?xml version="1.0"?>
+<model unit="millimeter" xmlns="http://schemas.microsoft.com/3dmanufacturing/core/2015/02">
+ <resources>
+  <object id="1" type="model">
+   <mesh>
+    <vertices><vertex x="0" y="0" z="0"/><vertex x="1" y="0" z="0"/><vertex x="0" y="1" z="0"/></vertices>
+    <triangles><triangle v1="0" v2="1" v3="2"/></triangles>
+   </mesh>
+  </object>
+  <object id="2" type="model">
+   <mesh>
+    <vertices><vertex x="2" y="0" z="0"/><vertex x="3" y="0" z="0"/><vertex x="2" y="1" z="0"/></vertices>
+    <triangles><triangle v1="0" v2="1" v3="2"/></triangles>
+   </mesh>
+  </object>
+ </resources>
+ <build/>
+</model>`
+        );
+        zip.file(
+            "Metadata/project_settings.config",
+            JSON.stringify({
+                filament_colour: ["#FBFCFF", "#F2910B", "#000000"],
+                filament_type: ["PLA", "PLA", "PLA"]
+            })
+        );
+        zip.file(
+            "Metadata/model_settings.config",
+            `<?xml version="1.0"?>
+<config>
+  <object id="6">
+    <metadata key="name" value="Chip"/>
+    <metadata key="extruder" value="3"/>
+    <part id="1" subtype="normal_part">
+      <metadata key="name" value="Background"/>
+      <metadata key="extruder" value="3"/>
+    </part>
+    <part id="2" subtype="normal_part">
+      <metadata key="name" value="QR"/>
+      <metadata key="extruder" value="1"/>
+    </part>
+  </object>
+</config>`
+        );
+        const result = await sanitizeBytes(await zip.generateAsync({ type: "uint8array" }));
+        const out = await loadOutput(result);
+        const xml = await out.file("3D/3dmodel.model").async("string");
+        const items = xml.match(/<item\b/g) || [];
+        assert.equal(items.length, 2);
+        assert.match(xml, /pindex="2"/);
+        assert.match(xml, /pindex="0"/);
+        const modelCfg = await out.file("Metadata/model_settings.config").async("string");
+        assert.match(modelCfg, /value="Background"/);
+        assert.match(modelCfg, /value="QR"/);
+        assert.match(modelCfg, /value="3"/);
+        assert.match(modelCfg, /value="1"/);
+    });
 });
 
 describe("real Bambu Studio 3MF", () => {
@@ -353,6 +431,29 @@ describe("real Bambu Studio 3MF", () => {
         assert.equal(project.filament_settings_id, undefined);
         assert.ok(Array.isArray(project.filament_colour));
         assert.equal(project.filament_colour.length, 5);
+        assert.deepEqual(project.extruder_colour, project.filament_colour);
+    });
+
+    test("K2 MakerChip keeps each part's filament instead of one gray object", async (t) => {
+        if (!fs.existsSync(SAMPLE_MAKERCHIP)) {
+            t.skip("sample 3MF not on disk");
+            return;
+        }
+        const result = await sanitizer.sanitize3mf(JSZip, fs.readFileSync(SAMPLE_MAKERCHIP));
+        const out = await JSZip.loadAsync(result.bytes);
+        const xml = await out.file("3D/3dmodel.model").async("string");
+        const items = xml.match(/<item\b/g) || [];
+        assert.equal(items.length, 5);
+        assert.match(xml, /pindex="0"/);
+        assert.match(xml, /pindex="1"/);
+        assert.match(xml, /pindex="2"/);
+        assert.match(xml, /pindex="3"/);
+        const modelCfg = await out.file("Metadata/model_settings.config").async("string");
+        assert.match(modelCfg, /Background Circle/);
+        assert.match(modelCfg, /K2DesignLab_QRCode/);
+        assert.match(modelCfg, /value="4"/);
+        const project = JSON.parse(await out.file("Metadata/project_settings.config").async("string"));
+        assert.deepEqual(project.filament_colour, ["#FBFCFF", "#F2910B", "#FFFF0A", "#000000"]);
         assert.deepEqual(project.extruder_colour, project.filament_colour);
     });
 });
