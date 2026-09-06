@@ -395,6 +395,88 @@ describe("sanitize3mf", () => {
         const slic3rModel = await out.file("Metadata/Slic3r_PE_model.config").async("string");
         assert.match(slic3rModel, /<volume firstid="0" lastid="0">/);
         assert.match(slic3rModel, /<volume firstid="1" lastid="1">/);
+        const plates = sanitizer.parsePlates(modelCfg);
+        assert.equal(plates.length, 1);
+        assert.equal(plates[0].instances.length, 1);
+    });
+
+    test("preserves multiple plates and remaps flattened object ids", async () => {
+        const zip = new JSZip();
+        zip.file(
+            "3D/3dmodel.model",
+            `<?xml version="1.0"?>
+<model unit="millimeter" xmlns="http://schemas.microsoft.com/3dmanufacturing/core/2015/02" xmlns:p="http://schemas.microsoft.com/3dmanufacturing/production/2015/06" requiredextensions="p">
+ <resources>
+  <object id="2" type="model">
+   <components>
+    <component p:path="/3D/Objects/object_1.model" objectid="1" transform="1 0 0 0 1 0 0 0 1 0 0 0"/>
+   </components>
+  </object>
+  <object id="4" type="model">
+   <components>
+    <component p:path="/3D/Objects/object_1.model" objectid="1" transform="1 0 0 0 1 0 0 0 1 0 0 0"/>
+   </components>
+  </object>
+ </resources>
+ <build>
+  <item objectid="2" transform="1 0 0 0 1 0 0 0 1 90 90 1" printable="1"/>
+  <item objectid="4" transform="1 0 0 0 1 0 0 0 1 306 90 1" printable="1"/>
+ </build>
+</model>`
+        );
+        zip.file("3D/Objects/object_1.model", meshObjectXml());
+        zip.file(
+            "Metadata/model_settings.config",
+            `<?xml version="1.0"?>
+<config>
+  <object id="2">
+    <metadata key="name" value="ChipA"/>
+    <metadata key="extruder" value="1"/>
+  </object>
+  <object id="4">
+    <metadata key="name" value="ChipB"/>
+    <metadata key="extruder" value="2"/>
+  </object>
+  <plate>
+    <metadata key="plater_id" value="1"/>
+    <model_instance>
+      <metadata key="object_id" value="2"/>
+      <metadata key="instance_id" value="0"/>
+      <metadata key="identify_id" value="10"/>
+    </model_instance>
+  </plate>
+  <plate>
+    <metadata key="plater_id" value="2"/>
+    <model_instance>
+      <metadata key="object_id" value="4"/>
+      <metadata key="instance_id" value="0"/>
+      <metadata key="identify_id" value="11"/>
+    </model_instance>
+  </plate>
+</config>`
+        );
+        const result = await sanitizeBytes(await zip.generateAsync({ type: "uint8array" }));
+        const out = await loadOutput(result);
+        const xml = await out.file("3D/3dmodel.model").async("string");
+        const itemIds = [...xml.matchAll(/<item objectid="(\d+)"/g)].map((m) => m[1]);
+        assert.equal(itemIds.length, 2);
+        assert.notEqual(itemIds[0], itemIds[1]);
+        const modelCfg = await out.file("Metadata/model_settings.config").async("string");
+        const plates = sanitizer.parsePlates(modelCfg);
+        assert.equal(plates.length, 2);
+        assert.equal(plates[0].instances[0].objectId, itemIds[0]);
+        assert.equal(plates[1].instances[0].objectId, itemIds[1]);
+        assert.match(modelCfg, /<assemble>/);
+        assert.equal(result.report.plates, 2);
+    });
+
+    test("assigns every leftover object to a plate when the source has no plate list", async () => {
+        const result = await sanitizeBytes(await makeBambuZip());
+        const out = await loadOutput(result);
+        const modelCfg = await out.file("Metadata/model_settings.config").async("string");
+        const plates = sanitizer.parsePlates(modelCfg);
+        assert.equal(plates.length, 1);
+        assert.ok(plates[0].instances.length >= 1);
     });
 
     test("extractPreviewMeshes returns colored parts for source and sanitized", async () => {

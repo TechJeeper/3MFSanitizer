@@ -353,6 +353,98 @@
         return objects;
     }
 
+    function parsePlates(xml) {
+        const plates = [];
+        if (!xml) return plates;
+        const plateRe = /<plate>([\s\S]*?)<\/plate>/gi;
+        let m;
+        while ((m = plateRe.exec(xml))) {
+            const body = m[1];
+            const instAt = body.search(/<model_instance/i);
+            const head = instAt >= 0 ? body.slice(0, instAt) : body;
+            const meta = {};
+            const metaRe = /<metadata\b([^>]*)\/?>/gi;
+            let mm;
+            while ((mm = metaRe.exec(head))) {
+                const attrs = parseAttrs(mm[1]);
+                if (attrs.key) meta[attrs.key] = attrs.value;
+            }
+            const instances = [];
+            const instRe = /<model_instance>([\s\S]*?)<\/model_instance>/gi;
+            let im;
+            while ((im = instRe.exec(body))) {
+                const imeta = {};
+                const ime = /<metadata\b([^>]*)\/?>/gi;
+                let k;
+                while ((k = ime.exec(im[1]))) {
+                    const attrs = parseAttrs(k[1]);
+                    if (attrs.key) imeta[attrs.key] = attrs.value;
+                }
+                if (!imeta.object_id) continue;
+                instances.push({
+                    objectId: String(imeta.object_id),
+                    instanceId: imeta.instance_id != null ? parseInt(imeta.instance_id, 10) || 0 : 0,
+                    identifyId: imeta.identify_id || ""
+                });
+            }
+            plates.push({
+                id: meta.plater_id || String(plates.length + 1),
+                name: meta.plater_name || "",
+                instances
+            });
+        }
+        return plates;
+    }
+
+    function assignInstancesToPlates(sourcePlates, emitted) {
+        const remaining = emitted.slice();
+        const take = (sourceObjectId, sourceInstanceId) => {
+            const idx = remaining.findIndex(
+                (item) =>
+                    String(item.sourceObjectId) === String(sourceObjectId) &&
+                    Number(item.sourceInstanceId) === Number(sourceInstanceId)
+            );
+            if (idx < 0) return null;
+            return remaining.splice(idx, 1)[0];
+        };
+
+        let identify = 1;
+        const plates = [];
+        for (const plate of sourcePlates || []) {
+            const instances = [];
+            for (const inst of plate.instances || []) {
+                const hit = take(inst.objectId, inst.instanceId);
+                if (!hit) continue;
+                instances.push({
+                    objectId: hit.objectid,
+                    instanceId: hit.outInstanceId,
+                    identifyId: inst.identifyId || String(identify++)
+                });
+            }
+            if (instances.length) {
+                plates.push({
+                    id: String(plates.length + 1),
+                    name: plate.name || "",
+                    instances
+                });
+            }
+        }
+
+        if (!plates.length && remaining.length) {
+            plates.push({ id: "1", name: "", instances: [] });
+        }
+        if (remaining.length && plates.length) {
+            for (const item of remaining) {
+                plates[plates.length - 1].instances.push({
+                    objectId: item.objectid,
+                    instanceId: item.outInstanceId,
+                    identifyId: String(identify++)
+                });
+            }
+        }
+        return plates;
+    }
+
     function extractModelMetadata(xml) {
         const metas = [];
         const modelOpen = xml.match(/<model\b[^>]*>/i);
@@ -403,14 +495,19 @@
 
     function extractBuildItems(xml) {
         const items = [];
+        const instanceCount = {};
         const re = /<item\b([^>]*)\/?>/gi;
         let m;
         while ((m = re.exec(xml))) {
             const attrs = parseAttrs(m[1]);
+            if (!attrs.objectid) continue;
+            const n = instanceCount[attrs.objectid] || 0;
+            instanceCount[attrs.objectid] = n + 1;
             items.push({
                 objectid: attrs.objectid,
                 transform: attrs.transform || null,
-                printable: attrs.printable
+                printable: attrs.printable,
+                instanceId: n
             });
         }
         return items;
@@ -594,9 +691,12 @@
         });
     }
 
-    function buildModelSettingsConfig(objects) {
+    function buildModelSettingsConfig(objects, plates, assembleItems) {
         const chunks = ['<?xml version="1.0" encoding="UTF-8"?>', "<config>"];
+        const seen = new Set();
         for (const obj of objects) {
+            if (seen.has(obj.id)) continue;
+            seen.add(obj.id);
             chunks.push(`  <object id="${obj.id}">`);
             if (obj.name) chunks.push(`    <metadata key="name" value="${escapeXml(obj.name)}"/>`);
             chunks.push(`    <metadata key="extruder" value="${obj.extruder || 1}"/>`);
@@ -608,6 +708,32 @@
                 chunks.push("    </part>");
             });
             chunks.push("  </object>");
+        }
+        const plateList = plates && plates.length ? plates : [];
+        for (const plate of plateList) {
+            chunks.push("  <plate>");
+            chunks.push(`    <metadata key="plater_id" value="${escapeXml(plate.id || "1")}"/>`);
+            chunks.push(`    <metadata key="plater_name" value="${escapeXml(plate.name || "")}"/>`);
+            chunks.push(`    <metadata key="locked" value="false"/>`);
+            for (const inst of plate.instances || []) {
+                chunks.push("    <model_instance>");
+                chunks.push(`      <metadata key="object_id" value="${inst.objectId}"/>`);
+                chunks.push(`      <metadata key="instance_id" value="${inst.instanceId != null ? inst.instanceId : 0}"/>`);
+                chunks.push(`      <metadata key="identify_id" value="${escapeXml(String(inst.identifyId || "1"))}"/>`);
+                chunks.push("    </model_instance>");
+            }
+            chunks.push("  </plate>");
+        }
+        const assemble = assembleItems && assembleItems.length ? assembleItems : [];
+        if (assemble.length) {
+            chunks.push("  <assemble>");
+            for (const item of assemble) {
+                const transform = item.transform || "1 0 0 0 1 0 0 0 1 0 0 0";
+                chunks.push(
+                    `   <assemble_item object_id="${item.objectid}" instance_id="${item.outInstanceId != null ? item.outInstanceId : 0}" transform="${escapeXml(transform)}" offset="0 0 0" />`
+                );
+            }
+            chunks.push("  </assemble>");
         }
         chunks.push("</config>", "");
         return chunks.join("\n");
@@ -739,7 +865,7 @@
         return chunks.join("\n");
     }
 
-    function buildFlattenedModel({ parsedModels, rootPath, modelSettings, bambuSettings, mappedSettings }) {
+    function buildFlattenedModel({ parsedModels, rootPath, modelSettings, bambuSettings, mappedSettings, plates }) {
         const root = parsedModels[pathKey(rootPath)];
         if (!root) {
             throw new Error("No valid 3D model found inside the 3MF file.");
@@ -795,15 +921,22 @@
             );
         }
 
-        function emitPlacedMesh({ filePath, objectId, transform, extruder, name, printable, volumes }) {
+        function rememberObjectMeta(id, name, extruder, volumes) {
+            if (objectMeta.some((o) => o.id === id)) return;
+            objectMeta.push({ id, name: name || "", extruder, volumes: volumes || [] });
+        }
+
+        function emitPlacedMesh({ filePath, objectId, transform, extruder, name, printable, volumes, sourceObjectId, sourceInstanceId }) {
             const newId = ensureMesh(filePath, objectId, extruder);
             if (!newId) return;
             buildItems.push({
                 objectid: newId,
                 transform,
-                printable: printable != null ? printable : "1"
+                printable: printable != null ? printable : "1",
+                sourceObjectId: sourceObjectId != null ? String(sourceObjectId) : String(objectId),
+                sourceInstanceId: sourceInstanceId != null ? sourceInstanceId : 0
             });
-            objectMeta.push({ id: newId, name: name || "", extruder, volumes: volumes || [] });
+            rememberObjectMeta(newId, name, extruder, volumes || []);
         }
 
         function gatherParts(node, wrapper, localTransform) {
@@ -829,7 +962,7 @@
 
         const items = root.buildItems.length
             ? root.buildItems
-            : root.objects.map((o) => ({ objectid: o.id, transform: null, printable: "1" }));
+            : root.objects.map((o) => ({ objectid: o.id, transform: null, printable: "1", instanceId: 0 }));
 
         if (!items.length) {
             throw new Error("No valid 3D model found inside the 3MF file.");
@@ -850,7 +983,9 @@
                     transform: resolved.transform,
                     extruder: wrapper.extruder || 1,
                     name: wrapper.name || "",
-                    printable
+                    printable,
+                    sourceObjectId: item.objectid,
+                    sourceInstanceId: item.instanceId
                 });
                 continue;
             }
@@ -867,14 +1002,16 @@
             buildItems.push({
                 objectid: id,
                 transform: item.transform,
-                printable
+                printable,
+                sourceObjectId: String(item.objectid),
+                sourceInstanceId: item.instanceId != null ? item.instanceId : 0
             });
-            objectMeta.push({
+            rememberObjectMeta(
                 id,
-                name: wrapper.name || parts[0].name || "",
-                extruder: wrapper.extruder || parts[0].extruder,
-                volumes: merged.volumes
-            });
+                wrapper.name || parts[0].name || "",
+                wrapper.extruder || parts[0].extruder,
+                merged.volumes
+            );
             logs.push(
                 `Kept merged assembly "${wrapper.name || "object"}" with ${parts.length} colored parts as one object.`
             );
@@ -958,13 +1095,29 @@
             ""
         ].join("\n");
 
+        const instanceCount = {};
+        for (const item of buildItems) {
+            const n = instanceCount[item.objectid] || 0;
+            item.outInstanceId = n;
+            instanceCount[item.objectid] = n + 1;
+        }
+        const assignedPlates = assignInstancesToPlates(plates, buildItems);
+        if (assignedPlates.length > 1) {
+            logs.push(`Preserved ${assignedPlates.length} plates with ${buildItems.length} object instance(s).`);
+        } else if (assignedPlates.length === 1) {
+            logs.push(`Assigned ${buildItems.length} object instance(s) to plate 1.`);
+        }
+
         return {
             xml,
             objectMeta,
+            plates: assignedPlates,
+            assembleItems: buildItems,
             logs,
             stats: {
                 objects: emittedMeshes.length + emittedAssemblies.length,
                 buildItems: buildItems.length,
+                plates: assignedPlates.length,
                 vertices: countVertices(xml),
                 triangles: countTriangles(xml),
                 paintColors: countPaintColors(xml),
@@ -1268,11 +1421,17 @@
         }
 
         let modelSettings = {};
+        let plates = [];
         const modelSetRec = findZipFile(filesByKey, "Metadata/model_settings.config");
         if (modelSetRec) {
             try {
-                modelSettings = parseModelSettings(await modelSetRec.entry.async("string"));
+                const modelXml = await modelSetRec.entry.async("string");
+                modelSettings = parseModelSettings(modelXml);
+                plates = parsePlates(modelXml);
                 logLine(log, `Read per-object extruder/color assignments for ${Object.keys(modelSettings).length} object(s).`);
+                if (plates.length) {
+                    logLine(log, `Read ${plates.length} plate(s) from the original project.`);
+                }
             } catch (e) {
                 logLine(log, "Warning: Could not parse model_settings.config.");
             }
@@ -1290,7 +1449,8 @@
             rootPath: rootRec.relativePath,
             modelSettings,
             bambuSettings,
-            mappedSettings
+            mappedSettings,
+            plates
         });
         flattened.logs.forEach((line) => logLine(log, line));
 
@@ -1328,8 +1488,14 @@
         }
         if (flattened.objectMeta.length) {
             newZip.file("Metadata/Slic3r_PE_model.config", buildSlic3rModelConfig(flattened.objectMeta));
-            newZip.file("Metadata/model_settings.config", buildModelSettingsConfig(flattened.objectMeta));
-            logLine(log, "Wrote per-object filament/extruder assignments.");
+            newZip.file(
+                "Metadata/model_settings.config",
+                buildModelSettingsConfig(flattened.objectMeta, flattened.plates, flattened.assembleItems)
+            );
+            logLine(
+                log,
+                `Wrote per-object filament/extruder assignments and ${flattened.plates.length} plate(s).`
+            );
         }
 
         for (const [relativePath, entry] of Object.entries(zip.files)) {
@@ -1373,6 +1539,7 @@
         sanitizeProjectSettings,
         buildSlic3rConfig,
         parseModelSettings,
+        parsePlates,
         shouldDropEntry,
         shouldStripSettingKey,
         mapFillPattern,
