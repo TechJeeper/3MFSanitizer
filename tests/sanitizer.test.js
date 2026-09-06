@@ -32,9 +32,11 @@ function meshObjectXml() {
      <vertex x="0" y="0" z="0"/>
      <vertex x="1" y="0" z="0"/>
      <vertex x="0" y="1" z="0"/>
+     <vertex x="1" y="1" z="0"/>
     </vertices>
     <triangles>
-     <triangle v1="0" v2="1" v3="2" paint_color="2C"/>
+     <triangle v1="0" v2="1" v3="2" paint_color="4"/>
+     <triangle v1="1" v2="3" v3="2" paint_color="8"/>
     </triangles>
    </mesh>
   </object>
@@ -69,6 +71,9 @@ async function makeBambuZip(overrides = {}) {
                 enable_support: "1",
                 filament_colour: ["#FFFFFF", "#C52C18"],
                 filament_type: ["PLA", "PLA"],
+                filament_diameter: ["1.75", "1.75"],
+                nozzle_temperature: ["220", "220"],
+                filament_settings_id: ["Generic PLA @BBL A1M", "Generic PLA @BBL A1M"],
                 printer_model: "Bambu Lab A1 mini",
                 machine_start_gcode: "M104 S200",
                 printable_area: ["0x0", "180x180"]
@@ -136,6 +141,26 @@ describe("mapSettingsToSlic3r", () => {
         assert.equal(mapped.fill_pattern, "grid");
         assert.equal(mapped.support_material, "1");
     });
+
+    test("keeps filament arrays and copies them to extruder_colour", () => {
+        const mapped = sanitizer.mapSettingsToSlic3r({
+            filament_colour: ["#FFFFFF", "#C52C18"],
+            filament_type: ["PLA", "PETG"],
+            nozzle_temperature: ["210", "240"]
+        });
+        assert.deepEqual(mapped.filament_colour, ["#FFFFFF", "#C52C18"]);
+        assert.deepEqual(mapped.filament_type, ["PLA", "PETG"]);
+        assert.deepEqual(mapped.extruder_colour, ["#FFFFFF", "#C52C18"]);
+        assert.deepEqual(mapped.temperature, ["210", "240"]);
+    });
+
+    test("replaces a single Bambu extruder_colour with the full filament palette", () => {
+        const mapped = sanitizer.mapSettingsToSlic3r({
+            filament_colour: ["#FFFFFF", "#161616", "#C52C18"],
+            extruder_colour: ["#018001"]
+        });
+        assert.deepEqual(mapped.extruder_colour, ["#FFFFFF", "#161616", "#C52C18"]);
+    });
 });
 
 describe("sanitizeProjectSettings", () => {
@@ -143,15 +168,36 @@ describe("sanitizeProjectSettings", () => {
         const cleaned = sanitizer.sanitizeProjectSettings({
             wall_loops: "3",
             line_width: "0.42",
+            filament_colour: ["#FFFFFF", "#C52C18"],
+            extruder_colour: ["#018001"],
+            filament_type: ["PLA", "PLA"],
+            filament_settings_id: ["Generic PLA @BBL A1M"],
             printer_model: "Bambu Lab A1 mini",
             machine_start_gcode: "M104",
             printable_area: ["0x0"]
         });
         assert.equal(cleaned.wall_loops, "3");
         assert.equal(cleaned.line_width, "0.42");
+        assert.deepEqual(cleaned.filament_colour, ["#FFFFFF", "#C52C18"]);
+        assert.deepEqual(cleaned.filament_type, ["PLA", "PLA"]);
+        assert.deepEqual(cleaned.extruder_colour, ["#FFFFFF", "#C52C18"]);
+        assert.equal(cleaned.filament_settings_id, undefined);
         assert.equal(cleaned.printer_model, undefined);
         assert.equal(cleaned.machine_start_gcode, undefined);
         assert.equal(cleaned.printable_area, undefined);
+    });
+});
+
+describe("decodePaintState", () => {
+    test("decodes Bambu TriangleSelector hex to extruder state", () => {
+        assert.equal(sanitizer.decodePaintState("4"), 1);
+        assert.equal(sanitizer.decodePaintState("8"), 2);
+        assert.equal(sanitizer.decodePaintState("0C"), 3);
+        assert.equal(sanitizer.decodePaintState("2C"), 5);
+        assert.equal(sanitizer.decodePaintState(""), 0);
+        assert.equal(sanitizer.stateToMaterialIndex(1, 2, 5), 0);
+        assert.equal(sanitizer.stateToMaterialIndex(0, 2, 5), 1);
+        assert.equal(sanitizer.stateToMaterialIndex(5, 1, 5), 4);
     });
 });
 
@@ -173,13 +219,17 @@ describe("sanitize3mf", () => {
         const result = await sanitizeBytes(await makeBambuZip());
         const out = await loadOutput(result);
         const xml = await out.file("3D/3dmodel.model").async("string");
-        assert.match(xml, /paint_color="2C"/);
+        assert.match(xml, /paint_color="4"/);
+        assert.match(xml, /paint_color="8"/);
+        assert.match(xml, /slic3rpe:mmu_segmentation="4"/);
+        assert.match(xml, /p1="0"/);
+        assert.match(xml, /p1="1"/);
         assert.match(xml, /<basematerials /);
         assert.match(xml, /displaycolor="#FFFFFFFF"/);
         assert.match(xml, /displaycolor="#C52C18FF"/);
-        assert.equal(result.report.paintColors, 1);
-        assert.equal(result.report.triangles, 1);
-        assert.equal(result.report.vertices, 3);
+        assert.equal(result.report.paintColors, 2);
+        assert.equal(result.report.triangles, 2);
+        assert.equal(result.report.vertices, 4);
     });
 
     test("writes slic3r settings without nesting inside existing metadata", async () => {
@@ -204,8 +254,16 @@ describe("sanitize3mf", () => {
         assert.equal(!!out.file("3D/_rels/3dmodel.model.rels"), false);
         const project = JSON.parse(await out.file("Metadata/project_settings.config").async("string"));
         assert.equal(project.wall_loops, "3");
+        assert.deepEqual(project.filament_colour, ["#FFFFFF", "#C52C18"]);
+        assert.deepEqual(project.filament_type, ["PLA", "PLA"]);
+        assert.equal(project.filament_settings_id, undefined);
         assert.equal(project.printer_model, undefined);
         assert.equal(project.machine_start_gcode, undefined);
+        const slic3r = await out.file("Metadata/Slic3r_PE.config").async("string");
+        assert.match(slic3r, /; filament_colour = #FFFFFF;#C52C18/);
+        assert.match(slic3r, /; extruder_colour = #FFFFFF;#C52C18/);
+        const modelCfg = await out.file("Metadata/model_settings.config").async("string");
+        assert.match(modelCfg, /key="extruder"/);
     });
 
     test("converts type=other to model and remaps shared production parts", async () => {
@@ -248,6 +306,7 @@ describe("sanitize3mf", () => {
         assert.match(xml, /<triangle /);
         assert.equal(result.report.triangles, 1);
         assert.equal(result.report.flattened, false);
+        assert.match(xml, /pid="/);
     });
 });
 
@@ -275,19 +334,25 @@ describe("real Bambu Studio 3MF", () => {
         assert.equal(result.report.triangles, srcTris);
         assert.equal(result.report.paintColors, srcPaint);
         assert.match(xml, /paint_color="/);
+        assert.match(xml, /slic3rpe:mmu_segmentation="/);
         assert.match(xml, /<basematerials /);
+        assert.match(xml, /p1="4"/);
 
         const slic3r = await out.file("Metadata/Slic3r_PE.config").async("string");
         assert.match(slic3r, /; layer_height = 0.2/);
         assert.match(slic3r, /; perimeters = 2/);
         assert.match(slic3r, /; extrusion_width = 0.42/);
         assert.match(slic3r, /; fill_density = 15%/);
+        assert.match(slic3r, /; filament_colour = #FFFFFF;#161616;#C52C18;#0085D5;#A0A0A0/);
+        assert.match(slic3r, /; extruder_colour = #FFFFFF;#161616;#C52C18;#0085D5;#A0A0A0/);
 
         const project = JSON.parse(await out.file("Metadata/project_settings.config").async("string"));
         assert.equal(project.wall_loops, "2");
         assert.equal(project.line_width, "0.42");
         assert.equal(project.printer_model, undefined);
+        assert.equal(project.filament_settings_id, undefined);
         assert.ok(Array.isArray(project.filament_colour));
         assert.equal(project.filament_colour.length, 5);
+        assert.deepEqual(project.extruder_colour, project.filament_colour);
     });
 });

@@ -57,8 +57,16 @@
         filament_type: "filament_type",
         filament_diameter: "filament_diameter",
         filament_density: "filament_density",
+        filament_flow_ratio: "extrusion_multiplier",
+        filament_max_volumetric_speed: "filament_max_volumetric_speed",
         nozzle_temperature: "temperature",
         nozzle_temperature_initial_layer: "first_layer_temperature",
+        hot_plate_temp: "bed_temperature",
+        hot_plate_temp_initial_layer: "first_layer_bed_temperature",
+        fan_max_speed: "max_fan_speed",
+        fan_min_speed: "min_fan_speed",
+        retraction_length: "retract_length",
+        retraction_speed: "retract_speed",
         elefant_foot_compensation: "elefant_foot_compensation",
         resolution: "resolution",
         spiral_mode: "spiral_vase",
@@ -142,7 +150,32 @@
         "machine_unload_filament_time",
         "template_custom_gcode",
         "post_process",
-        "curr_bed_type"
+        "curr_bed_type",
+        "filament_settings_id",
+        "filament_ids",
+        "filament_extruder_compatibility",
+        "filament_extruder_variant",
+        "filament_map",
+        "filament_map_mode",
+        "filament_volume_map",
+        "filament_nozzle_map"
+    ]);
+
+    const FILAMENT_ARRAY_KEYS = new Set([
+        "filament_colour",
+        "filament_type",
+        "filament_diameter",
+        "filament_density",
+        "filament_flow_ratio",
+        "filament_max_volumetric_speed",
+        "nozzle_temperature",
+        "nozzle_temperature_initial_layer",
+        "hot_plate_temp",
+        "hot_plate_temp_initial_layer",
+        "fan_max_speed",
+        "fan_min_speed",
+        "retraction_length",
+        "retraction_speed"
     ]);
 
     function normalizePath(p) {
@@ -235,14 +268,7 @@
             if (bambuKey === "wall_generator") {
                 value = String(firstValue(value)).toLowerCase() === "arachne" ? "arachne" : "classic";
             }
-            if (
-                bambuKey === "filament_colour" ||
-                bambuKey === "filament_type" ||
-                bambuKey === "filament_diameter" ||
-                bambuKey === "filament_density" ||
-                bambuKey === "nozzle_temperature" ||
-                bambuKey === "nozzle_temperature_initial_layer"
-            ) {
+            if (FILAMENT_ARRAY_KEYS.has(bambuKey)) {
                 value = asArray(value);
             } else if (Array.isArray(value)) {
                 value = firstValue(value);
@@ -250,7 +276,16 @@
 
             out[slic3rKey] = value;
         }
+        syncExtruderColours(out);
         return out;
+    }
+
+    function syncExtruderColours(out) {
+        const filaments = asArray(out.filament_colour);
+        const extruders = asArray(out.extruder_colour);
+        if (filaments.length && filaments.length > extruders.length) {
+            out.extruder_colour = filaments;
+        }
     }
 
     function sanitizeProjectSettings(config) {
@@ -260,6 +295,7 @@
             if (shouldStripSettingKey(key)) continue;
             out[key] = value;
         }
+        syncExtruderColours(out);
         return out;
     }
 
@@ -450,6 +486,99 @@
         if (raw.length === 8) return "#" + raw.toUpperCase();
         if (raw.length === 6) return "#" + raw.toUpperCase() + "FF";
         return "#808080FF";
+    }
+
+    function hexToBitstream(hex) {
+        const bits = [];
+        const s = String(hex || "").toUpperCase();
+        for (let i = s.length - 1; i >= 0; i--) {
+            const ch = s[i];
+            let dec = 0;
+            if (ch >= "0" && ch <= "9") dec = ch.charCodeAt(0) - 48;
+            else if (ch >= "A" && ch <= "F") dec = 10 + ch.charCodeAt(0) - 65;
+            else continue;
+            for (let b = 0; b < 4; b++) bits.push((dec & (1 << b)) !== 0);
+        }
+        return bits;
+    }
+
+    function decodePaintState(hex) {
+        if (!hex) return 0;
+        const bits = hexToBitstream(hex);
+        let pos = 0;
+        const read2 = () => {
+            const a = bits[pos++] ? 1 : 0;
+            const b = bits[pos++] ? 2 : 0;
+            return a | b;
+        };
+        const read4 = () => {
+            let n = 0;
+            for (let i = 0; i < 4; i++) {
+                if (bits[pos++]) n |= 1 << i;
+            }
+            return n;
+        };
+        const decodeNode = () => {
+            if (pos >= bits.length) return 0;
+            const splitSides = read2();
+            if (splitSides === 0) {
+                const xx = read2();
+                if (xx === 3) return read4() + 3;
+                return xx;
+            }
+            read2();
+            const childStates = [];
+            for (let c = splitSides; c >= 0; c--) childStates.push(decodeNode());
+            const counts = new Map();
+            for (const state of childStates) {
+                counts.set(state, (counts.get(state) || 0) + 1);
+            }
+            let best = 0;
+            let bestN = -1;
+            for (const [state, n] of counts) {
+                if (n > bestN || (n === bestN && state !== 0 && best === 0)) {
+                    best = state;
+                    bestN = n;
+                }
+            }
+            return best;
+        };
+        return decodeNode();
+    }
+
+    function stateToMaterialIndex(state, defaultExtruder, colorCount) {
+        let idx = !state || state <= 0 ? Math.max(0, (defaultExtruder || 1) - 1) : state - 1;
+        if (colorCount > 0) idx = Math.min(idx, colorCount - 1);
+        return idx;
+    }
+
+    function applyTriangleMaterials(body, materialsId, defaultExtruder, colorCount) {
+        return String(body).replace(/<triangle\b([^>]*)\/?>/gi, (full, attrStr) => {
+            const attrs = parseAttrs(attrStr);
+            const paint = attrs.paint_color || attrs["slic3rpe:mmu_segmentation"] || "";
+            const state = paint ? decodePaintState(paint) : 0;
+            const p1 = stateToMaterialIndex(state, defaultExtruder, colorCount);
+            let out = `<triangle v1="${attrs.v1}" v2="${attrs.v2}" v3="${attrs.v3}" pid="${materialsId}" p1="${p1}"`;
+            if (paint) {
+                out += ` paint_color="${escapeXml(paint)}" slic3rpe:mmu_segmentation="${escapeXml(paint)}"`;
+            }
+            if (attrs.paint_supports) out += ` paint_supports="${escapeXml(attrs.paint_supports)}"`;
+            if (attrs.paint_seam) out += ` paint_seam="${escapeXml(attrs.paint_seam)}"`;
+            out += "/>";
+            return out;
+        });
+    }
+
+    function buildModelSettingsConfig(objects) {
+        const chunks = ['<?xml version="1.0" encoding="UTF-8"?>', "<config>"];
+        for (const obj of objects) {
+            chunks.push(`  <object id="${obj.id}">`);
+            if (obj.name) chunks.push(`    <metadata key="name" value="${escapeXml(obj.name)}"/>`);
+            chunks.push(`    <metadata key="extruder" value="${obj.extruder || 1}"/>`);
+            chunks.push("  </object>");
+        }
+        chunks.push("</config>", "");
+        return chunks.join("\n");
     }
 
     function shouldDropEntry(relativePath) {
@@ -702,7 +831,12 @@
         resourceXml.push(" " + buildBasematerialsXml(materialsId, colors, types));
 
         for (const mesh of emittedMeshes) {
-            const cleanedBody = rewriteObjectBody(mesh.body, () => null).replace(/p:[\w.-]+\s*=\s*"[^"]*"\s*/g, "");
+            const cleanedBody = applyTriangleMaterials(
+                rewriteObjectBody(mesh.body, () => null).replace(/p:[\w.-]+\s*=\s*"[^"]*"\s*/g, ""),
+                materialsId,
+                mesh.extruder,
+                colors.length
+            );
             const pindex = pindexFor(mesh.extruder);
             resourceXml.push(
                 ` <object id="${mesh.id}" type="model" pid="${materialsId}" pindex="${pindex}">${cleanedBody}</object>`
@@ -725,7 +859,7 @@
 
         const xml = [
             '<?xml version="1.0" encoding="UTF-8"?>',
-            `<model unit="millimeter" xml:lang="en-US" xmlns="${CORE_NS}">`,
+            `<model unit="millimeter" xml:lang="en-US" xmlns="${CORE_NS}" xmlns:slic3rpe="http://schemas.slic3r.org/3mf/2017/06">`,
             metadataXml.join("\n"),
             " <resources>",
             resourceXml.join("\n"),
@@ -843,7 +977,7 @@
             logLine(log, "Flattened 3MF Production Extension into a single core 3dmodel.model (required for Cura/Prusa/Anycubic).");
         }
         logLine(log, `Preserved geometry: ${flattened.stats.vertices} vertices, ${flattened.stats.triangles} triangles, ${flattened.stats.paintColors} painted faces.`);
-        logLine(log, `Preserved ${flattened.stats.materials} filament color(s) as 3MF basematerials.`);
+        logLine(log, `Preserved ${flattened.stats.materials} filament color(s) and painted faces as 3MF materials + paint_color.`);
 
         const newZip = new JSZip();
         newZip.file("[Content_Types].xml", contentTypesXml());
@@ -871,6 +1005,8 @@
         }
         if (flattened.objectMeta.length) {
             newZip.file("Metadata/Slic3r_PE_model.config", buildSlic3rModelConfig(flattened.objectMeta));
+            newZip.file("Metadata/model_settings.config", buildModelSettingsConfig(flattened.objectMeta));
+            logLine(log, "Wrote per-object filament/extruder assignments.");
         }
 
         for (const [relativePath, entry] of Object.entries(zip.files)) {
@@ -921,6 +1057,9 @@
         formatTransform,
         parseTransform,
         displayColor,
+        decodePaintState,
+        stateToMaterialIndex,
+        applyTriangleMaterials,
         BAMBU_TO_SLIC3R
     };
 });
