@@ -252,6 +252,60 @@ describe("sanitize3mf", () => {
         assert.match(slic3r, /; fill_density = 15%/);
     });
 
+    test("writes empty Copyright as a self-closing metadata tag", async () => {
+        const rootXml = `<?xml version="1.0" encoding="UTF-8"?>
+<model unit="millimeter" xml:lang="en-US" xmlns="http://schemas.microsoft.com/3dmanufacturing/core/2015/02" xmlns:p="http://schemas.microsoft.com/3dmanufacturing/production/2015/06" requiredextensions="p">
+ <metadata name="Title">Broly</metadata>
+ <metadata name="Copyright">
+ <metadata name="Designer">MakerWorld</metadata>
+ <resources>
+  <object id="2" p:UUID="root" type="model">
+   <components>
+    <component p:path="/3D/Objects/object_1.model" objectid="1" transform="1 0 0 0 1 0 0 0 1 0 0 0"/>
+   </components>
+  </object>
+ </resources>
+ <build>
+  <item objectid="2" p:UUID="bbbb" transform="1 0 0 0 1 0 0 0 1 10 20 3" printable="1"/>
+ </build>
+</model>
+`;
+        const result = await sanitizeBytes(await makeBambuZip({ rootXml }));
+        const out = await loadOutput(result);
+        const xml = await out.file("3D/3dmodel.model").async("string");
+        assert.match(xml, /<metadata name="Copyright" \/>/);
+        assert.match(xml, /<metadata name="Title">Broly<\/metadata>/);
+        assert.match(xml, /<metadata name="Designer">MakerWorld<\/metadata>/);
+        assert.doesNotMatch(xml, /<metadata name="Copyright">/);
+        assert.doesNotMatch(xml, /<metadata name="Copyright"><\/metadata>/);
+    });
+
+    test("keeps self-closing and empty paired Copyright metadata self-closing", async () => {
+        const rootXml = `<?xml version="1.0" encoding="UTF-8"?>
+<model unit="millimeter" xml:lang="en-US" xmlns="http://schemas.microsoft.com/3dmanufacturing/core/2015/02" xmlns:p="http://schemas.microsoft.com/3dmanufacturing/production/2015/06" requiredextensions="p">
+ <metadata name="Title">Broly</metadata>
+ <metadata name="Copyright" />
+ <metadata name="Description"></metadata>
+ <resources>
+  <object id="2" p:UUID="root" type="model">
+   <components>
+    <component p:path="/3D/Objects/object_1.model" objectid="1" transform="1 0 0 0 1 0 0 0 1 0 0 0"/>
+   </components>
+  </object>
+ </resources>
+ <build>
+  <item objectid="2" p:UUID="bbbb" transform="1 0 0 0 1 0 0 0 1 10 20 3" printable="1"/>
+ </build>
+</model>
+`;
+        const result = await sanitizeBytes(await makeBambuZip({ rootXml }));
+        const xml = await (await loadOutput(result)).file("3D/3dmodel.model").async("string");
+        assert.match(xml, /<metadata name="Copyright" \/>/);
+        assert.match(xml, /<metadata name="Description" \/>/);
+        assert.doesNotMatch(xml, /<metadata name="Copyright">/);
+        assert.doesNotMatch(xml, /<metadata name="Description">/);
+    });
+
     test("strips gcode, slice_info, and Bambu printer profile", async () => {
         const result = await sanitizeBytes(await makeBambuZip());
         const out = await loadOutput(result);

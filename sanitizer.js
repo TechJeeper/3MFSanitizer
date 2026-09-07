@@ -452,12 +452,36 @@
         const after = xml.slice(xml.indexOf(modelOpen[0]) + modelOpen[0].length);
         const resourcesAt = after.search(/<resources[\s>]/i);
         const head = resourcesAt >= 0 ? after.slice(0, resourcesAt) : after;
-        const re = /<metadata\b([^>]*)>([\s\S]*?)<\/metadata>/gi;
-        let m;
-        while ((m = re.exec(head))) {
-            metas.push({ attrs: parseAttrs(m[1]), text: m[2] });
+        const startRe = /<metadata\b/gi;
+        let start;
+        while ((start = startRe.exec(head))) {
+            const afterName = start.index + start[0].length;
+            const rest = head.slice(afterName);
+            const endAttrs = rest.search(/\/?>/);
+            if (endAttrs < 0) break;
+            const attrStr = rest.slice(0, endAttrs);
+            const selfClose = rest[endAttrs] === "/";
+            let cursor = afterName + endAttrs + (selfClose ? 2 : 1);
+            let text = "";
+            if (!selfClose) {
+                const tail = head.slice(cursor);
+                const closeAt = tail.search(/<\/metadata>/i);
+                const nextMeta = tail.search(/<metadata\b/i);
+                if (closeAt >= 0 && (nextMeta < 0 || closeAt < nextMeta)) {
+                    text = tail.slice(0, closeAt);
+                    cursor += closeAt + "</metadata>".length;
+                }
+            }
+            startRe.lastIndex = cursor;
+            metas.push({ attrs: parseAttrs(attrStr), text });
         }
         return metas;
+    }
+
+    function formatCoreMetadata(name, text) {
+        const value = text == null ? "" : String(text).trim();
+        if (!value) return ` <metadata name="${escapeXml(name)}" />`;
+        return ` <metadata name="${escapeXml(name)}">${escapeXml(value)}</metadata>`;
     }
 
     function extractObjects(xml) {
@@ -1034,7 +1058,7 @@
         for (const meta of root.metadata) {
             const name = meta.attrs.name;
             if (!name || !keepMetaNames.has(name)) continue;
-            metadataXml.push(` <metadata name="${escapeXml(name)}">${meta.text}</metadata>`);
+            metadataXml.push(formatCoreMetadata(name, meta.text));
         }
         metadataXml.push(` <metadata name="Application">3MF Sanitizer</metadata>`);
         for (const [key, value] of Object.entries(mappedSettings)) {
