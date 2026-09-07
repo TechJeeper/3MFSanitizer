@@ -175,7 +175,13 @@ describe("sanitizeProjectSettings", () => {
             filament_settings_id: ["Generic PLA @BBL A1M"],
             printer_model: "Bambu Lab A1 mini",
             machine_start_gcode: "M104",
-            printable_area: ["0x0"]
+            printable_area: ["0x0"],
+            use_relative_e_distances: "1",
+            before_layer_change_gcode: "",
+            raft_first_layer_expansion: "-1",
+            tree_support_wall_count: -1,
+            filament_retraction_length: ["nil", "nil"],
+            ironing_fan_speed: ["-1", "-1"]
         });
         assert.equal(cleaned.wall_loops, "3");
         assert.equal(cleaned.line_width, "0.42");
@@ -186,6 +192,12 @@ describe("sanitizeProjectSettings", () => {
         assert.equal(cleaned.printer_model, undefined);
         assert.equal(cleaned.machine_start_gcode, undefined);
         assert.equal(cleaned.printable_area, undefined);
+        assert.equal(cleaned.use_relative_e_distances, undefined);
+        assert.equal(cleaned.before_layer_change_gcode, undefined);
+        assert.equal(cleaned.raft_first_layer_expansion, undefined);
+        assert.equal(cleaned.tree_support_wall_count, undefined);
+        assert.equal(cleaned.filament_retraction_length, undefined);
+        assert.equal(cleaned.ironing_fan_speed, undefined);
     });
 });
 

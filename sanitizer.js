@@ -158,7 +158,11 @@
         "filament_map",
         "filament_map_mode",
         "filament_volume_map",
-        "filament_nozzle_map"
+        "filament_nozzle_map",
+        "use_relative_e_distances",
+        "use_firmware_retraction",
+        "use_volumetric_e",
+        "default_ams_type"
     ]);
 
     const FILAMENT_ARRAY_KEYS = new Set([
@@ -237,6 +241,21 @@
         return false;
     }
 
+    function isSentinelSettingToken(value) {
+        if (value == null) return true;
+        const s = String(value).trim().toLowerCase();
+        return s === "nil" || s === "-1";
+    }
+
+    function sanitizeSettingValue(value) {
+        if (Array.isArray(value)) {
+            if (!value.length || value.some(isSentinelSettingToken)) return undefined;
+            return value;
+        }
+        if (isSentinelSettingToken(value)) return undefined;
+        return value;
+    }
+
     function extractBambuSettings(config) {
         if (!config || typeof config !== "object" || Array.isArray(config)) return {};
         if (config.process_settings && typeof config.process_settings === "object") {
@@ -293,7 +312,9 @@
         const out = {};
         for (const [key, value] of Object.entries(merged)) {
             if (shouldStripSettingKey(key)) continue;
-            out[key] = value;
+            const cleaned = sanitizeSettingValue(value);
+            if (cleaned === undefined) continue;
+            out[key] = cleaned;
         }
         syncExtruderColours(out);
         return out;
@@ -1561,6 +1582,7 @@
         extractBambuSettings,
         mapSettingsToSlic3r,
         sanitizeProjectSettings,
+        sanitizeSettingValue,
         buildSlic3rConfig,
         parseModelSettings,
         parsePlates,
