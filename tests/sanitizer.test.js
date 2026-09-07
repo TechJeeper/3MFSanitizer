@@ -181,7 +181,12 @@ describe("sanitizeProjectSettings", () => {
             raft_first_layer_expansion: "-1",
             tree_support_wall_count: -1,
             filament_retraction_length: ["nil", "nil"],
-            ironing_fan_speed: ["-1", "-1"]
+            ironing_fan_speed: ["-1", "-1"],
+            ensure_vertical_shell_thickness: "enabled",
+            wall_filament: "0",
+            solid_infill_filament: "0",
+            sparse_infill_filament: "0",
+            support_filament: "0"
         });
         assert.equal(cleaned.wall_loops, "3");
         assert.equal(cleaned.line_width, "0.42");
@@ -198,6 +203,11 @@ describe("sanitizeProjectSettings", () => {
         assert.equal(cleaned.tree_support_wall_count, undefined);
         assert.equal(cleaned.filament_retraction_length, undefined);
         assert.equal(cleaned.ironing_fan_speed, undefined);
+        assert.equal(cleaned.ensure_vertical_shell_thickness, "ensure_all");
+        assert.equal(cleaned.wall_filament, undefined);
+        assert.equal(cleaned.solid_infill_filament, undefined);
+        assert.equal(cleaned.sparse_infill_filament, undefined);
+        assert.equal(cleaned.support_filament, undefined);
     });
 });
 

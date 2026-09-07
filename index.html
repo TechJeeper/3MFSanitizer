@@ -55,7 +55,7 @@
     <script src="https://cdn.tailwindcss.com"></script>
     <script src="https://cdnjs.cloudflare.com/ajax/libs/jszip/3.10.1/jszip.min.js"></script>
     <script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/0.160.1/three.min.js"></script>
-    <script src="sanitizer.js?v=6"></script>
+    <script src="sanitizer.js?v=7"></script>
     <script src="preview.js?v=4"></script>
     <style>
         :root { color-scheme: dark; }
@@ -90,6 +90,16 @@
             box-shadow: 0 0 0 4px rgba(56, 189, 248, 0.15);
             transform: scale(1.01);
         }
+        .drop-zone.is-busy { cursor: wait; }
+        .drop-spinner {
+            width: 42px;
+            height: 42px;
+            border-radius: 9999px;
+            border: 3px solid rgba(125, 211, 252, 0.18);
+            border-top-color: #7dd3fc;
+            animation: drop-spin 0.75s linear infinite;
+        }
+        @keyframes drop-spin { to { transform: rotate(360deg); } }
         ::-webkit-scrollbar { width: 8px; }
         ::-webkit-scrollbar-track { background: #0f172a; border-radius: 4px; }
         ::-webkit-scrollbar-thumb { background: #475569; border-radius: 4px; }
@@ -151,7 +161,7 @@
                 </div>
             </div>
 
-            <div id="dropZone" class="drop-zone border border-dashed border-slate-500/70 rounded-2xl p-10 sm:p-14 flex flex-col items-center justify-center cursor-pointer bg-slate-950/40 hover:bg-slate-900/70 hover:border-sky-400/50 mb-6 group">
+            <div id="dropZone" class="drop-zone relative overflow-hidden border border-dashed border-slate-500/70 rounded-2xl p-10 sm:p-14 flex flex-col items-center justify-center cursor-pointer bg-slate-950/40 hover:bg-slate-900/70 hover:border-sky-400/50 mb-6 group" aria-busy="false">
                 <div class="bg-sky-400/10 border border-sky-400/20 p-4 rounded-2xl mb-4 group-hover:bg-sky-400/15 transition-colors">
                     <svg xmlns="http://www.w3.org/2000/svg" class="h-10 w-10 text-sky-300" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="1.7">
                         <path stroke-linecap="round" stroke-linejoin="round" d="M7 16a4 4 0 01-.88-7.903A5 5 0 1115.9 6L16 6a5 5 0 011 9.9M15 13l-3-3m0 0l-3 3m3-3v12" />
@@ -160,6 +170,11 @@
                 <p class="text-lg sm:text-xl font-semibold text-slate-100 text-center">Drop a .3mf file here</p>
                 <p class="text-slate-400 mt-2 text-sm">or click to browse — processing stays in your browser</p>
                 <input type="file" id="fileInput" class="hidden" accept=".3mf,.3MF" />
+                <div id="dropBusy" class="hidden absolute inset-0 z-10 flex flex-col items-center justify-center rounded-2xl bg-slate-950/80 backdrop-blur-sm" aria-hidden="true">
+                    <div class="drop-spinner" role="status" aria-label="Sanitizing"></div>
+                    <p class="mt-4 text-sm font-semibold text-sky-200">Sanitizing…</p>
+                    <p class="mt-1 text-xs text-slate-400">Large files can take a minute</p>
+                </div>
             </div>
 
             <div id="previewArea" class="hidden mb-6">
@@ -237,6 +252,7 @@
 
     <script>
         const dropZone = document.getElementById('dropZone');
+        const dropBusy = document.getElementById('dropBusy');
         const fileInput = document.getElementById('fileInput');
         const logContainer = document.getElementById('logContainer');
         const logArea = document.getElementById('logArea');
@@ -254,13 +270,25 @@
 
         let cleanedZipBlob = null;
         let finalFileName = "";
+        let isProcessing = false;
+
+        function setDropBusy(busy) {
+            isProcessing = busy;
+            dropBusy.classList.toggle('hidden', !busy);
+            dropZone.classList.toggle('is-busy', busy);
+            dropZone.setAttribute('aria-busy', busy ? 'true' : 'false');
+            dropBusy.setAttribute('aria-hidden', busy ? 'false' : 'true');
+        }
 
         // UI Event Listeners
-        dropZone.addEventListener('click', () => fileInput.click());
+        dropZone.addEventListener('click', () => {
+            if (isProcessing) return;
+            fileInput.click();
+        });
         
         dropZone.addEventListener('dragover', (e) => {
             e.preventDefault();
-            dropZone.classList.add('dragover');
+            if (!isProcessing) dropZone.classList.add('dragover');
         });
 
         dropZone.addEventListener('dragleave', () => {
@@ -270,13 +298,13 @@
         dropZone.addEventListener('drop', (e) => {
             e.preventDefault();
             dropZone.classList.remove('dragover');
-            if (e.dataTransfer.files.length) {
+            if (!isProcessing && e.dataTransfer.files.length) {
                 handleFile(e.dataTransfer.files[0]);
             }
         });
 
         fileInput.addEventListener('change', (e) => {
-            if (e.target.files.length) {
+            if (!isProcessing && e.target.files.length) {
                 handleFile(e.target.files[0]);
             }
         });
@@ -333,6 +361,7 @@
                 showModal('Invalid File', 'Please upload a valid .3mf file.');
                 return;
             }
+            if (isProcessing) return;
 
             logArea.innerHTML = '';
             logContainer.classList.remove('hidden');
@@ -340,6 +369,7 @@
             previewArea.classList.add('hidden');
             if (window.ThreeMFPreview) ThreeMFPreview.dispose();
             cleanedZipBlob = null;
+            setDropBusy(true);
 
             log(`Loaded file: <strong>${file.name}</strong> (${(file.size / 1024 / 1024).toFixed(2)} MB)`);
             log('Initializing 3MF parser...');
@@ -376,6 +406,8 @@
                 console.error(error);
                 log(`<span class="text-red-500">ERROR:</span> ${error.message}`);
                 showModal('Processing Error', error.message || 'Failed to process the 3MF file. The file might be corrupted or password protected.');
+            } finally {
+                setDropBusy(false);
             }
         }
     </script>

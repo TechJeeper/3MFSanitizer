@@ -165,6 +165,25 @@
         "default_ams_type"
     ]);
 
+    const FILAMENT_SLOT_KEYS = new Set([
+        "wall_filament",
+        "solid_infill_filament",
+        "sparse_infill_filament",
+        "support_filament",
+        "support_interface_filament"
+    ]);
+
+    const VERTICAL_SHELL_MAP = {
+        enabled: "ensure_all",
+        "1": "ensure_all",
+        true: "ensure_all",
+        disabled: "disabled",
+        "0": "disabled",
+        false: "disabled",
+        none: "disabled",
+        partial: "ensure_moderate"
+    };
+
     const FILAMENT_ARRAY_KEYS = new Set([
         "filament_colour",
         "filament_type",
@@ -256,6 +275,17 @@
         return value;
     }
 
+    function isUnsetFilamentSlot(key, value) {
+        if (!FILAMENT_SLOT_KEYS.has(key)) return false;
+        const n = Number(firstValue(value));
+        return !Number.isFinite(n) || n < 1;
+    }
+
+    function mapVerticalShellThickness(value) {
+        const raw = String(firstValue(value)).trim().toLowerCase();
+        return VERTICAL_SHELL_MAP[raw] || firstValue(value);
+    }
+
     function extractBambuSettings(config) {
         if (!config || typeof config !== "object" || Array.isArray(config)) return {};
         if (config.process_settings && typeof config.process_settings === "object") {
@@ -287,6 +317,9 @@
             if (bambuKey === "wall_generator") {
                 value = String(firstValue(value)).toLowerCase() === "arachne" ? "arachne" : "classic";
             }
+            if (bambuKey === "ensure_vertical_shell_thickness") {
+                value = mapVerticalShellThickness(value);
+            }
             if (FILAMENT_ARRAY_KEYS.has(bambuKey)) {
                 value = asArray(value);
             } else if (Array.isArray(value)) {
@@ -312,9 +345,10 @@
         const out = {};
         for (const [key, value] of Object.entries(merged)) {
             if (shouldStripSettingKey(key)) continue;
+            if (isUnsetFilamentSlot(key, value)) continue;
             const cleaned = sanitizeSettingValue(value);
             if (cleaned === undefined) continue;
-            out[key] = cleaned;
+            out[key] = key === "ensure_vertical_shell_thickness" ? mapVerticalShellThickness(cleaned) : cleaned;
         }
         syncExtruderColours(out);
         return out;
